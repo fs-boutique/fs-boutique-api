@@ -77,20 +77,32 @@ async function upsertToNotion(token, guest, reservationId) {
   }
 }
 
-// Validate that we have a complete guest record per FS Boutique rule (2026-05-05):
-// must have real personal email + phone + birthday. No proxies, no Fabio.
+// FS Boutique rule (2026-05-13, clarified):
+// Sync everyone with at minimum email OR phone. Don't gate on missing fields —
+// MORE contacts in the database = better. But report missing fields so Fabio
+// can chase the guest for the gap.
+// Always skip Fabio's own emails. Always skip OTA proxy emails (they don't reach the guest).
 const FABIO_EMAILS = ['fabio@fsboutique.co', 'fabiotennis@icloud.com'];
+function isProxyEmail(email) {
+  if (!email) return false;
+  const e = email.toLowerCase();
+  return e.endsWith('guest.booking.com') || e.endsWith('guest.airbnb.com') || e.includes('@airbnb');
+}
+function guestCompleteness(guest) {
+  const missing = [];
+  if (!guest.name || guest.name.trim().split(/\s+/).length < 2) missing.push('name');
+  if (!guest.phone) missing.push('phone');
+  if (!guest.email || isProxyEmail(guest.email)) missing.push('email');
+  if (!guest.birthday) missing.push('birthday');
+  return { missing };
+}
+// Only block sync if (a) it's Fabio's own contact, or (b) we have NO useful contact channel
+// (no real email AND no phone). Everything else syncs, with missing fields flagged.
 function isCompleteGuest(guest) {
-  if (!guest.email || !guest.phone) return false;
-  const email = guest.email.toLowerCase();
-  if (FABIO_EMAILS.includes(email)) return false; // never sync Fabio's own contact
-  if (email.endsWith('guest.booking.com')) return false;
-  if (email.endsWith('guest.airbnb.com')) return false;
-  if (email.includes('@airbnb')) return false;
-  // Birthday is now required per the new rule. Skip silently if missing — guest hasn't
-  // completed the form yet. Webhook will fire again on the next reservation.updated.
-  if (!guest.birthday) return false;
-  return true;
+  if (guest.email && FABIO_EMAILS.includes(guest.email.toLowerCase())) return false;
+  const hasUsableEmail = guest.email && !isProxyEmail(guest.email);
+  const hasPhone = !!guest.phone;
+  return hasUsableEmail || hasPhone;
 }
 
 // Upsert contact to Brevo — only when guest record is complete
