@@ -105,6 +105,29 @@ function isCompleteGuest(guest) {
   return hasUsableEmail || hasPhone;
 }
 
+// Send Telegram alert to Fabio when a guest is synced with missing fields.
+// Fires only on FIRST sync (new Notion page) to avoid spamming on every
+// reservation.updated. Per memory: chat 8505284058, FS Manager bot.
+async function flagMissingFields(guest, missing) {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  const chatId = process.env.TELEGRAM_CHAT_ID;
+  if (!token || !chatId || !missing.length) return false;
+  const checkIn = guest.checkIn ? guest.checkIn.split('T')[0].split('-').reverse().slice(0, 2).join('/') : '?';
+  const text = `🚩 Hóspede ${guest.name} (${guest.property || 'sem propriedade'}, check-in ${checkIn}) faltando: ${missing.join(', ')} — preciso pedir pra ele/ela.`;
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'HTML' })
+    });
+    console.log('Telegram flag', guest.name, missing.join(','), '→', res.status);
+    return res.ok;
+  } catch (e) {
+    console.log('Telegram flag failed', e.message);
+    return false;
+  }
+}
+
 // Upsert contact to Brevo — only when guest record is complete
 async function upsertToBrevo(apiKey, guest) {
   if (!isCompleteGuest(guest)) {
@@ -239,13 +262,20 @@ exports.handler = async (event) => {
   }
 
   try {
-    // Both Brevo and Notion now require complete guest record (email + phone + birthday)
     if (isCompleteGuest(guest)) {
+      const wasExisting = !!(await findExistingPage(notionToken, reservationId));
       await upsertToNotion(notionToken, guest, reservationId);
       if (brevoKey) await upsertToBrevo(brevoKey, guest);
-      return { statusCode: 200, body: JSON.stringify({ success: true, synced: true, email: guest.email }) };
+
+      // Flag missing fields on first sync only (avoids spam on reservation.updated)
+      const { missing } = guestCompleteness(guest);
+      if (!wasExisting && missing.length > 0) {
+        await flagMissingFields(guest, missing);
+      }
+
+      return { statusCode: 200, body: JSON.stringify({ success: true, synced: true, email: guest.email, missing }) };
     }
-    return { statusCode: 200, body: JSON.stringify({ success: true, synced: false, reason: 'incomplete guest record (email + phone + birthday all required)' }) };
+    return { statusCode: 200, body: JSON.stringify({ success: true, synced: false, reason: 'no usable contact channel (neither email nor phone)' }) };
   } catch (err) {
     console.log('Sync error', err.message);
     return { statusCode: 500, body: err.message };
