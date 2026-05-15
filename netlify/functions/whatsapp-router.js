@@ -270,9 +270,11 @@ async function transcribeAudio(mediaId) {
     formData.append('model', 'whisper-1');
     // No language hint — auto-detect (Fabio mixes PT/EN heavily; forcing pt mistranscribes English words)
 
-    // Force pt: Whisper auto-detect picks random languages (e.g. Romanian) on
-    // short PT audio. PT-trained handles English words inserted naturally.
+    // Force pt to prevent Whisper auto-detect from picking random languages
+    // on short clips. Add English-aware prompt so mixed PT+EN code-switching
+    // transcribes EN words correctly in English (not phonetic-PT).
     formData.append('language', 'pt');
+    formData.append('prompt', 'Fabio fala português brasileiro misturando palavras em inglês: meeting, checkout, check-in, booking, occupancy, rate, listing, Airbnb, Booking, dashboard, owner, host, guest, cleaner, Asana, WhatsApp, Claw, Claude.');
     const whisperRes = await fetch('https://api.openai.com/v1/audio/transcriptions', {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${openaiKey}` },

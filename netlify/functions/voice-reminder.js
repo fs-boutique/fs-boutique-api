@@ -28,8 +28,10 @@ async function whisperTranscribe(audioBuffer, mime) {
   const formData = new FormData();
   formData.append('file', new Blob([audioBuffer], { type: mime }), `audio.${ext}`);
   formData.append('model', 'whisper-1');
-  // Force pt — auto-detect picks random languages (e.g. Romanian) on short clips.
+  // Force pt to prevent auto-detect picking random languages. Add bilingual
+  // prompt so PT+EN code-switching transcribes correctly.
   formData.append('language', 'pt');
+  formData.append('prompt', 'Fabio fala português brasileiro misturando palavras em inglês: meeting, checkout, check-in, booking, occupancy, rate, listing, Airbnb, Booking, dashboard, owner, host, guest, cleaner, Asana, WhatsApp, Claw, Claude.');
   const res = await fetch('https://api.openai.com/v1/audio/transcriptions', {
     method: 'POST',
     headers: { Authorization: `Bearer ${key}` },
