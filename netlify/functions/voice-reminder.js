@@ -135,15 +135,13 @@ exports.handler = async (event) => {
     return jsonResponse(500, { transcript: text, asana: a });
   }
 
-  // 3. Send WhatsApp confirmation
-  const taskUrl = `https://app.asana.com/0/${process.env.ASANA_PROJECT_OPERACOES}/${a.task.gid}`;
-  const confirmMsg = `✅ Salvo: "${text}"\n${taskUrl}`;
-  await sendWhatsApp(confirmMsg);
+  // 3. Send WhatsApp confirmation (no Asana link — Fabio hates the long URL,
+  //    and FS Daily PDF already lists these tasks every morning anyway).
+  await sendWhatsApp(`✅ Salvo: "${text}"`);
 
   return jsonResponse(200, {
     ok: true,
     transcript: text,
     task_gid: a.task.gid,
-    task_url: taskUrl,
   });
 };
