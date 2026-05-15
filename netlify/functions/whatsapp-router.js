@@ -9,6 +9,7 @@
 
 const META_GRAPH = 'https://graph.facebook.com/v21.0';
 const crypto = require('crypto');
+const { TOOL_DEFINITIONS, runTool } = require('./lib/claw-tools');
 
 // Forward incoming WhatsApp message to OpenClaw VPS endpoint with HMAC signature.
 // OpenClaw on VPS handles classification, memory, response. Netlify is thin proxy.
@@ -175,42 +176,96 @@ async function classify(text) {
   return { type: 'conversation' };
 }
 
-// Sonnet conversational reply with multi-turn memory + retry/fallback on overload
-async function callClaudeWithFallback(key, systemPrompt, messages) {
+// Sonnet conversational reply WITH TOOL USE. Loops until Claude stops calling tools.
+// Returns final text reply. Tools defined in lib/claw-tools.js (Guesty/Asana queries).
+async function callClaudeWithTools(key, systemPrompt, messages, maxToolIterations = 4) {
   const models = ['claude-sonnet-4-6', 'claude-sonnet-4-5-20250929', 'claude-haiku-4-5-20251001'];
+
+  // Mutable copy of messages for tool-use loop
+  const convo = messages.slice();
+
   let lastError = null;
-  for (const model of models) {
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        const res = await fetch('https://api.anthropic.com/v1/messages', {
-          method: 'POST',
-          headers: {
-            'x-api-key': key,
-            'anthropic-version': '2023-06-01',
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ model, max_tokens: 1024, system: systemPrompt, messages })
-        });
-        const data = await res.json();
-        if (data.content?.[0]?.text) {
-          if (model !== 'claude-sonnet-4-6') console.log(`Used fallback model: ${model}`);
-          return data.content[0].text.trim();
+  let iteration = 0;
+  let usedModel = models[0];
+
+  while (iteration < maxToolIterations) {
+    iteration++;
+    let response = null;
+    // Try each model with retry on overload
+    for (const model of models) {
+      let attempted = false;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        attempted = true;
+        try {
+          const res = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: {
+              'x-api-key': key,
+              'anthropic-version': '2023-06-01',
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              model,
+              max_tokens: 1024,
+              system: systemPrompt,
+              tools: TOOL_DEFINITIONS,
+              messages: convo,
+            }),
+          });
+          const data = await res.json();
+          if (data.content && Array.isArray(data.content) && data.content.length > 0) {
+            usedModel = model;
+            response = data;
+            break;
+          }
+          lastError = data.error?.type || 'empty_response';
+          console.log(`Claude ${model} attempt ${attempt + 1}: ${lastError}`);
+          if (lastError === 'overloaded_error' && attempt === 0) {
+            await new Promise(r => setTimeout(r, 1500));
+            continue;
+          }
+          break; // try next model
+        } catch (e) {
+          lastError = e.message;
+          console.log(`Claude ${model} network error:`, e.message);
+          break;
         }
-        lastError = data.error?.type || 'empty_response';
-        console.log(`Claude ${model} attempt ${attempt + 1}: ${lastError}`);
-        if (lastError === 'overloaded_error' && attempt === 0) {
-          await new Promise(r => setTimeout(r, 1500));
-          continue;
-        }
-        break; // try next model
-      } catch (e) {
-        lastError = e.message;
-        console.log(`Claude ${model} network error:`, e.message);
-        break;
       }
+      if (response) break;
     }
+
+    if (!response) {
+      return `⚠️ Anthropic API instável agora (${lastError}). Manda de novo em 30s.`;
+    }
+
+    // Process response: check stop_reason
+    if (response.stop_reason === 'tool_use') {
+      // Find all tool_use blocks; append assistant turn + execute each tool
+      convo.push({ role: 'assistant', content: response.content });
+      const toolResults = [];
+      for (const block of response.content) {
+        if (block.type === 'tool_use') {
+          console.log(`[tool_use] ${block.name}(${JSON.stringify(block.input).slice(0, 100)})`);
+          const result = await runTool(block.name, block.input);
+          toolResults.push({
+            type: 'tool_result',
+            tool_use_id: block.id,
+            content: JSON.stringify(result).slice(0, 8000),
+          });
+        }
+      }
+      convo.push({ role: 'user', content: toolResults });
+      continue; // next iteration to let Claude synthesize
+    }
+
+    // stop_reason === 'end_turn' (or 'max_tokens' / other) — extract text
+    const textBlocks = response.content.filter(b => b.type === 'text');
+    const text = textBlocks.map(b => b.text).join('\n').trim();
+    if (usedModel !== 'claude-sonnet-4-6') console.log(`Used fallback model: ${usedModel}`);
+    return text || `⚠️ resposta vazia do modelo.`;
   }
-  return `⚠️ Anthropic API instável agora (${lastError}). Manda de novo em 30s.`;
+
+  return `⚠️ Tool loop hit limit (${maxToolIterations} iterations). Tenta de novo mais curto.`;
 }
 
 async function converseWithClaude(text, phone) {
@@ -224,20 +279,22 @@ async function converseWithClaude(text, phone) {
   const systemPrompt =
     'You are Claw, Fabio\'s executive assistant for FS Boutique (5 STR properties in São Paulo + La Quinta, CA). ' +
     'You communicate with him via WhatsApp on his system line +1 949 372 9980. ' +
-    'Reply short, direct, no preamble. Match the language Fabio writes in (PT-BR or EN). ' +
+    'Reply short, direct, no preamble. Match the language Fabio writes in (PT-BR default; switch to EN only if he writes pure English). ' +
     'You have memory of recent messages in this thread (last ~12h).\n\n' +
+    'TOOLS available — USE THEM when Fabio asks about live data:\n' +
+    '- guesty_occupancy(property, window_days): occupancy % + reservation list. Use for "ocupação", "occupancy", "como tá Moema", etc.\n' +
+    '- guesty_arrivals(window_days): who is checking in. Use for "quem chega", "próximos check-ins", "arrivals".\n' +
+    '- asana_today(): all open tasks across 6 FS Boutique projects. Use for "o que tenho pra hoje", "tasks abertas", "TODOs".\n\n' +
     'CRITICAL RULES:\n' +
     '- No emojis unless Fabio uses them first.\n' +
     '- Never say "padrão boutique", "[word] boutique", "FS Boutique standard" — strict brand rule.\n' +
     '- Use ✅ / ⚠️ / ❌ for status if needed (green check, yellow warning triangle, red X).\n' +
-    '- You are running inside a Netlify webhook — NO live tool access yet. You can\'t query Guesty, Notion, HostBuddy directly in this version.\n' +
-    '- If Fabio asks for live data (e.g. "what\'s arriving today", "show me Moema reservations"), respond: "Pra isso preciso de acesso live a Guesty/Notion — ainda não tô equipado. Quer que eu chame Claude Code no Mac?"\n' +
-    '- For straight questions you can answer from training (general advice, opinions, drafting messages, brainstorming), respond directly.\n' +
-    '- For action requests (mandar mensagem pra cleaner X, mudar SOP, etc), respond: "Não tenho ações habilitadas ainda. Por enquanto sou só conversa + reminder. Posso te ajudar a pensar/rascunhar."\n' +
     '- Properties: Ibirapuera, Op Art (Moema), Moema II, Riviera, La Quinta. Under construction: 25h, Ritmo Itaim.\n' +
+    '- For action requests that need to write/modify (send msg to cleaner, change SOP, create Asana task with no time): respond "Não tenho writes habilitados ainda — só queries/reminders". Reminders WITH time DO work (separate path).\n' +
+    '- After running tools, summarize the data Fabio needs in 1-3 lines. Don\'t dump raw JSON. Don\'t list 20 items — pick top 5 or aggregate.\n' +
     'Keep replies under 4 lines unless Fabio asks for more detail.';
 
-  const reply = await callClaudeWithFallback(key, systemPrompt, messages);
+  const reply = await callClaudeWithTools(key, systemPrompt, messages);
 
   // Persist this turn only if we got a real reply (skip on overload error msg)
   if (!reply.startsWith('⚠️ Anthropic API instável')) {
