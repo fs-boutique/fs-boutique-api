@@ -42,9 +42,26 @@ async function upsertToNotion(token, guest, reservationId) {
       date: { start: guest.checkIn, end: guest.checkOut || null }
     };
   }
-  // Birthday from Check-In form (custom field aniversário/birth/dob). Normalized YYYY-MM-DD.
+  // Birthday from Check-In form (Guest record top-level OR custom field). Normalized YYYY-MM-DD.
   if (guest.birthday && /^\d{4}-\d{2}-\d{2}/.test(guest.birthday)) {
     properties['Birthday'] = { date: { start: guest.birthday.slice(0, 10) } };
+  }
+  // Language (preferredLanguage from guest record) → Notion Language select
+  if (guest.language) {
+    properties['Language'] = { select: { name: String(guest.language).toLowerCase() } };
+  }
+  // Allergies array from guest record → Notion Allergies multi_select
+  if (guest.allergies && guest.allergies.length > 0) {
+    properties['Allergies'] = {
+      multi_select: guest.allergies.slice(0, 10).map(a => ({ name: String(a).slice(0, 100) })),
+    };
+  }
+  // Adults from reservation guestsCount → Notion Adults number
+  if (typeof guest.adults === 'number' && guest.adults > 0) {
+    properties['Adults'] = { number: guest.adults };
+  }
+  if (guest.checkOut) {
+    properties['Check-out Date'] = { date: { start: guest.checkOut } };
   }
 
   const existing = await findExistingPage(token, reservationId);
@@ -232,9 +249,11 @@ exports.handler = async (event) => {
     }
   }
 
-  // If webhook payload is thin, fetch the full guest record from Guesty directly
+  // ALWAYS fetch full guest record from Guesty. Top-level fields like `birthday`,
+  // `preferredLanguage`, `allergies` are NOT in customFields — they're top-level
+  // on the guest object and only available via /v1/guests/{id}.
   let fullGuest = r.guest || {};
-  if (!personalEmail && !fullGuest.email && fullGuest._id) {
+  if (fullGuest._id) {
     try {
       const guestyToken = await getGuestyToken();
       if (guestyToken) {
@@ -258,8 +277,18 @@ exports.handler = async (event) => {
     }
   }
 
+  // Top-level birthday on guest (NOT in customFields). Common path for Check-In form data.
+  if (!birthday && fullGuest.birthday) {
+    const raw = String(fullGuest.birthday);
+    const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (m) birthday = `${m[1]}-${m[2]}-${m[3]}`;
+  }
+
   const guestEmail = personalEmail || fullGuest.email || null;
   const guestPhone = fullGuest.phone || (fullGuest.phones && fullGuest.phones[0]) || null;
+  const language = fullGuest.preferredLanguage || null;
+  const allergies = Array.isArray(fullGuest.allergies) ? fullGuest.allergies.filter(Boolean) : [];
+  const adultsCount = r.guestsCount || null;
 
   const listingName = r.listing?.nickname || r.listing?.title || '';
   const mappedProperty = Object.entries(PROPERTY_MAP).find(([key]) =>
@@ -271,6 +300,9 @@ exports.handler = async (event) => {
     email: guestEmail,
     phone: guestPhone,
     birthday: birthday,
+    language: language,
+    allergies: allergies,
+    adults: adultsCount,
     checkIn: r.checkIn ? r.checkIn.split('T')[0] : null,
     checkOut: r.checkOut ? r.checkOut.split('T')[0] : null,
     property: mappedProperty,
