@@ -105,16 +105,37 @@ exports.handler = async (event) => {
     return jsonResponse(401, { error: 'unauthorized' });
   }
 
-  // Read body as binary
-  const body = event.isBase64Encoded
-    ? Buffer.from(event.body, 'base64')
-    : Buffer.from(event.body || '', 'utf-8');
+  // Two body modes:
+  // 1. JSON with {audio_base64: "..."} — used by iPhone Shortcut to avoid iOS
+  //    "send media item" privacy prompt that won't stick on Always Allow.
+  // 2. Raw binary audio in body — used by curl/test.
+  const contentType =
+    event.headers['content-type'] || event.headers['Content-Type'] || 'audio/m4a';
+
+  let body;
+  let mime;
+  if (contentType.includes('application/json')) {
+    let parsed;
+    try {
+      parsed = JSON.parse(event.body || '{}');
+    } catch (e) {
+      return jsonResponse(400, { error: 'invalid JSON' });
+    }
+    if (!parsed.audio_base64) {
+      return jsonResponse(400, { error: 'missing audio_base64' });
+    }
+    body = Buffer.from(parsed.audio_base64, 'base64');
+    mime = parsed.mime || 'audio/m4a';
+  } else {
+    body = event.isBase64Encoded
+      ? Buffer.from(event.body, 'base64')
+      : Buffer.from(event.body || '', 'utf-8');
+    mime = contentType;
+  }
 
   if (!body.length) {
     return jsonResponse(400, { error: 'empty body' });
   }
-
-  const contentType = event.headers['content-type'] || event.headers['Content-Type'] || 'audio/m4a';
 
   // 1. Transcribe
   const t = await whisperTranscribe(body, contentType);
