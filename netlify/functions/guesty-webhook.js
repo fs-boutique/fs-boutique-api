@@ -168,6 +168,13 @@ exports.handler = async (event) => {
     return { statusCode: 405, body: 'Method Not Allowed' };
   }
 
+  // Log every incoming webhook for later diagnosis of intermittent Guesty delivery.
+  console.log('[guesty-webhook] incoming POST', {
+    bodyLen: (event.body || '').length,
+    contentType: event.headers['content-type'] || event.headers['Content-Type'] || '',
+    userAgent: event.headers['user-agent'] || event.headers['User-Agent'] || '',
+  });
+
   const notionToken = process.env.NOTION_TOKEN;
   const brevoKey = process.env.BREVO_API_KEY;
 
@@ -179,10 +186,20 @@ exports.handler = async (event) => {
   try {
     payload = JSON.parse(event.body);
   } catch (e) {
+    console.log('[guesty-webhook] invalid JSON');
     return { statusCode: 400, body: 'Invalid JSON' };
   }
 
+  // Log the event shape — captures Guesty's delivery details for offline analysis.
+  console.log('[guesty-webhook] event=', payload.event, 'reservationId=', payload.data?._id,
+              'status=', payload.data?.status,
+              'source=', payload.data?.source,
+              'platform=', payload.data?.integration?.platform,
+              'hasGuestEmail=', !!(payload.data?.guest?.email),
+              'hasGuestPhone=', !!(payload.data?.guest?.phone));
+
   if (!['reservation.new', 'reservation.updated'].includes(payload.event)) {
+    console.log('[guesty-webhook] ignoring event type', payload.event);
     return { statusCode: 200, body: 'ignored' };
   }
 
