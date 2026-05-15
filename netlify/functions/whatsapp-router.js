@@ -274,7 +274,7 @@ async function transcribeAudio(mediaId) {
     // on short clips. Add English-aware prompt so mixed PT+EN code-switching
     // transcribes EN words correctly in English (not phonetic-PT).
     formData.append('language', 'pt');
-    formData.append('prompt', 'Fabio fala português brasileiro misturando palavras em inglês: meeting, checkout, check-in, booking, occupancy, rate, listing, Airbnb, Booking, dashboard, owner, host, guest, cleaner, Asana, WhatsApp, Claw, Claude.');
+    formData.append('prompt', 'Fabio fala português brasileiro com palavras inglesas misturadas. Frases típicas: "lembra de tomar café", "lembra de ligar pro João", "anota: comprar leite", "vou ao meeting às 3", "occupancy do Moema essa semana", "rate do Booking", "cleaner amanhã na Riviera". Palavras EN comuns: meeting, checkout, check-in, booking, occupancy, rate, listing, Airbnb, Booking, dashboard, owner, host, guest, cleaner, Asana, WhatsApp, Claw, Claude. SEMPRE escreva "lembra" (não "lembro") quando ele pede pra ser lembrado.');
     const whisperRes = await fetch('https://api.openai.com/v1/audio/transcriptions', {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${openaiKey}` },
