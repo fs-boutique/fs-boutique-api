@@ -42,6 +42,10 @@ async function upsertToNotion(token, guest, reservationId) {
       date: { start: guest.checkIn, end: guest.checkOut || null }
     };
   }
+  // Birthday from Check-In form (custom field aniversário/birth/dob). Normalized YYYY-MM-DD.
+  if (guest.birthday && /^\d{4}-\d{2}-\d{2}/.test(guest.birthday)) {
+    properties['Birthday'] = { date: { start: guest.birthday.slice(0, 10) } };
+  }
 
   const existing = await findExistingPage(token, reservationId);
 
