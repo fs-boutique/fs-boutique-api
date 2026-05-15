@@ -116,10 +116,24 @@ async function sendTelegram(text) {
   } catch (e) { console.log('TG send fail', e.message); return false; }
 }
 
-// Haiku classifier — reminder vs conversation
+// Haiku classifier — reminder vs conversation, with optional due_at extraction
 async function classify(text) {
   const key = process.env.ANTHROPIC_API_KEY;
   if (!key) return { type: 'conversation' };
+  // Fabio is in PST (America/Los_Angeles). Provide current local datetime for relative
+  // time parsing ("amanhã às 4am", "em 30 min", "sexta às 10h").
+  const now = new Date();
+  const fabioTZ = 'America/Los_Angeles';
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: fabioTZ,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    hour12: false, timeZoneName: 'longOffset',
+  });
+  const parts = fmt.formatToParts(now).reduce((a, p) => (a[p.type] = p.value, a), {});
+  const nowISO = `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}${(parts.timeZoneName || '').replace('GMT', '')}`;
+  const dayName = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][new Date(nowISO).getDay()];
+
   try {
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -130,29 +144,32 @@ async function classify(text) {
       },
       body: JSON.stringify({
         model: 'claude-haiku-4-5-20251001',
-        max_tokens: 256,
+        max_tokens: 384,
         system:
-          'You classify WhatsApp messages Fabio sends to his assistant Claw. ' +
+          'You classify WhatsApp messages Fabio sends to his assistant Claw.\n' +
+          `Current Fabio local time: ${nowISO} (${dayName}, PST, America/Los_Angeles).\n\n` +
           'DEFAULT to "conversation". Only return "reminder" when there is an EXPLICIT reminder/todo keyword.\n\n' +
           '"reminder" — ONLY when message starts with or clearly contains:\n' +
           '- "lembrar de ...", "lembra de ..."\n' +
           '- "remember to ...", "remind me to ..."\n' +
           '- "TODO: ...", "task: ..."\n' +
           '- "preciso lembrar de ...", "anota: ..."\n\n' +
-          '"conversation" — EVERYTHING ELSE, including:\n' +
-          '- Statements/facts ("cancelar a reservação em Bottega Angelina")\n' +
-          '- Questions ("como tá ocupação Moema?")\n' +
-          '- Discussions/thoughts ("acho que devíamos baixar preço")\n' +
-          '- Requests for help ("rascunha email pra Zen", "manda msg pra Ronilde")\n' +
-          '- Imperatives without explicit reminder framing ("cancelar X", "checar Y")\n\n' +
-          'When in doubt → "conversation". Fabio will explicitly say "lembrar de" when he wants a task.\n\n' +
-          'Reply ONLY with single-line JSON: {"type":"reminder|conversation","body":"clean task text (only if reminder, strip the prefix)","property":"Ibirapuera|Op Art|Moema II|Riviera|La Quinta|null"}.',
+          '"conversation" — EVERYTHING ELSE: statements, questions, discussions, action requests.\n\n' +
+          'When in doubt → "conversation".\n\n' +
+          'IF type=reminder, also extract optional time:\n' +
+          '- due_at_iso: ISO 8601 datetime with PST offset (e.g. "2026-05-16T04:00:00-07:00") IF user mentioned a specific time, else null.\n' +
+          '- due_at_str: human-readable PT description (e.g. "amanhã 04:00 PST", "em 30 min", "sexta 10h") or null.\n' +
+          '- Examples: "lembra amanhã às 4am" → due_at_iso=next day 04:00, due_at_str="amanhã 04:00 PST".\n' +
+          '  "lembra em 30 min" → due_at_iso=now+30min ISO, due_at_str="em 30 min".\n' +
+          '  "lembra de comprar leite" → due_at_iso=null, due_at_str=null (no time given).\n' +
+          '  "lembra hoje às 11pm" → today 23:00 PST (if not yet past), else tomorrow.\n\n' +
+          'Reply ONLY with single-line JSON: {"type":"reminder|conversation","body":"clean task text","property":"Ibirapuera|Op Art|Moema II|Riviera|La Quinta|null","due_at_iso":"ISO datetime or null","due_at_str":"PT desc or null"}.',
         messages: [{ role: 'user', content: text }],
       })
     });
     const data = await res.json();
     const raw = data.content?.[0]?.text || '';
-    const m = raw.match(/\{[^}]+\}/);
+    const m = raw.match(/\{[\s\S]+\}/);
     if (m) return JSON.parse(m[0]);
   } catch (e) { console.log('Classify fail', e.message); }
   return { type: 'conversation' };
@@ -304,13 +321,18 @@ async function createAsanaTask(parsed, originalText) {
   const notes = [
     `Original WhatsApp: "${originalText}"`,
     parsed.property ? `Property: ${parsed.property}` : null,
+    parsed.due_at_str ? `Reminder time: ${parsed.due_at_str}` : null,
     `Source: Claw via WhatsApp (Meta Cloud API)`,
     `Captured: ${new Date().toISOString()}`,
   ].filter(Boolean).join('\n');
+  const taskData = { name, notes, projects: [project], workspace: '1214678919136252' };
+  // If classifier extracted a specific time, set due_at (Asana ISO 8601).
+  // Scheduler on VPS polls Asana every minute and pings WhatsApp when due_at matches.
+  if (parsed.due_at_iso) taskData.due_at = parsed.due_at_iso;
   const res = await fetch('https://app.asana.com/api/1.0/tasks', {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ data: { name, notes, projects: [project], workspace: '1214678919136252' } })
+    body: JSON.stringify({ data: taskData })
   });
   const data = await res.json();
   if (!res.ok) {
@@ -373,7 +395,11 @@ exports.handler = async (event) => {
         const task = await createAsanaTask(classified, text);
         if (task) {
           const taskName = classified.body || text.slice(0, 60);
-          await sendWhatsApp(from, `✅ Salvo: "${taskName}"`);
+          let confirmMsg = `✅ Salvo: "${taskName}"`;
+          if (classified.due_at_str) {
+            confirmMsg += ` — vou te avisar ${classified.due_at_str}`;
+          }
+          await sendWhatsApp(from, confirmMsg);
         } else {
           await sendWhatsApp(from, `❌ falha ao criar task no Asana`);
         }
