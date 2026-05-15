@@ -329,12 +329,14 @@ async function createAsanaTask(parsed, originalText) {
   // If classifier extracted a specific time, set due_at (Asana ISO 8601).
   // Scheduler on VPS polls Asana every minute and pings WhatsApp when due_at matches.
   if (parsed.due_at_iso) taskData.due_at = parsed.due_at_iso;
+  console.log('[asana] POST request body:', JSON.stringify(taskData).slice(0, 500));
   const res = await fetch('https://app.asana.com/api/1.0/tasks', {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ data: taskData })
   });
   const data = await res.json();
+  console.log('[asana] response status:', res.status, 'body:', JSON.stringify(data).slice(0, 800));
   if (!res.ok) {
     console.log('Asana create fail', JSON.stringify(data).slice(0, 200));
     return null;
@@ -391,6 +393,7 @@ exports.handler = async (event) => {
       // This ensures reminders end up in FS Daily PDF (which reads Asana ⚙️ Operações).
       // Conversation → forward to VPS Claw for full brain.
       const classified = await classify(text);
+      console.log('[classify] input:', text.slice(0, 100), 'output:', JSON.stringify(classified));
       if (classified.type === 'reminder') {
         const task = await createAsanaTask(classified, text);
         if (task) {
