@@ -28,7 +28,8 @@ async function whisperTranscribe(audioBuffer, mime) {
   const formData = new FormData();
   formData.append('file', new Blob([audioBuffer], { type: mime }), `audio.${ext}`);
   formData.append('model', 'whisper-1');
-  // No language hint — auto-detect PT/EN
+  // Force pt — auto-detect picks random languages (e.g. Romanian) on short clips.
+  formData.append('language', 'pt');
   const res = await fetch('https://api.openai.com/v1/audio/transcriptions', {
     method: 'POST',
     headers: { Authorization: `Bearer ${key}` },

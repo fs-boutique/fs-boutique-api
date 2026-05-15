@@ -270,6 +270,9 @@ async function transcribeAudio(mediaId) {
     formData.append('model', 'whisper-1');
     // No language hint — auto-detect (Fabio mixes PT/EN heavily; forcing pt mistranscribes English words)
 
+    // Force pt: Whisper auto-detect picks random languages (e.g. Romanian) on
+    // short PT audio. PT-trained handles English words inserted naturally.
+    formData.append('language', 'pt');
     const whisperRes = await fetch('https://api.openai.com/v1/audio/transcriptions', {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${openaiKey}` },
