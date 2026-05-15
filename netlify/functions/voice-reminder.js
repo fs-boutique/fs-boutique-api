@@ -115,13 +115,14 @@ exports.handler = async (event) => {
     return jsonResponse(401, { error: 'unauthorized' });
   }
 
-  // Two body modes:
-  // 1. JSON with {audio_base64: "..."} — used by iPhone Shortcut to avoid iOS
-  //    "send media item" privacy prompt that won't stick on Always Allow.
-  // 2. Raw binary audio in body — used by curl/test.
+  // Three body modes:
+  // 1. JSON with {text: "..."} — used by Dictate Text iPhone Shortcut (no audio).
+  // 2. JSON with {audio_base64: "..."} — iPhone Shortcut with binary audio in base64.
+  // 3. Raw binary audio in body — curl/test.
   const contentType =
     event.headers['content-type'] || event.headers['Content-Type'] || 'audio/m4a';
 
+  let text;
   let body;
   let mime;
   if (contentType.includes('application/json')) {
@@ -131,32 +132,43 @@ exports.handler = async (event) => {
     } catch (e) {
       return jsonResponse(400, { error: 'invalid JSON' });
     }
-    if (!parsed.audio_base64) {
-      return jsonResponse(400, { error: 'missing audio_base64' });
+    if (parsed.text && parsed.text.trim()) {
+      // Mode 1: text directly (skip Whisper)
+      text = parsed.text.trim();
+    } else if (parsed.audio_base64) {
+      // Mode 2: base64 audio
+      body = Buffer.from(parsed.audio_base64, 'base64');
+      mime = parsed.mime || 'audio/m4a';
+    } else {
+      return jsonResponse(400, { error: 'missing text or audio_base64' });
     }
-    body = Buffer.from(parsed.audio_base64, 'base64');
-    mime = parsed.mime || 'audio/m4a';
   } else {
+    // Mode 3: raw binary audio
     body = event.isBase64Encoded
       ? Buffer.from(event.body, 'base64')
       : Buffer.from(event.body || '', 'utf-8');
     mime = contentType;
   }
 
-  if (!body.length) {
-    return jsonResponse(400, { error: 'empty body' });
+  // If body present and no text yet, transcribe via Whisper.
+  if (!text) {
+    if (!body || !body.length) {
+      return jsonResponse(400, { error: 'empty body' });
+    }
   }
 
-  // 1. Transcribe
-  const t = await whisperTranscribe(body, contentType);
-  if (t.error) {
-    await sendWhatsApp(`❌ Voice reminder falhou na transcrição: ${t.error}`);
-    return jsonResponse(500, t);
-  }
-  const text = (t.text || '').trim();
+  // 1. Transcribe (only if we have audio and no text yet)
   if (!text) {
-    await sendWhatsApp(`❌ Voice reminder: áudio veio vazio (sem fala detectada)`);
-    return jsonResponse(200, { error: 'empty transcript' });
+    const t = await whisperTranscribe(body, mime || contentType);
+    if (t.error) {
+      await sendWhatsApp(`❌ Voice reminder falhou na transcrição: ${t.error}`);
+      return jsonResponse(500, t);
+    }
+    text = (t.text || '').trim();
+    if (!text) {
+      await sendWhatsApp(`❌ Voice reminder: áudio veio vazio (sem fala detectada)`);
+      return jsonResponse(200, { error: 'empty transcript' });
+    }
   }
 
   // 2. Create Asana task (always — this endpoint is a quick-capture for car/hands-free use)
