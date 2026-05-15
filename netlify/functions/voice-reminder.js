@@ -95,6 +95,16 @@ exports.handler = async (event) => {
     return jsonResponse(405, { error: 'POST only' });
   }
 
+  // Debug log: capture incoming request shape so we can diagnose iOS Shortcut payloads
+  // without iPhone debugger access.
+  console.log('voice-reminder request:', JSON.stringify({
+    method: event.httpMethod,
+    headers: event.headers,
+    isBase64Encoded: event.isBase64Encoded,
+    bodyLen: event.body?.length || 0,
+    bodyPreview: (event.body || '').slice(0, 200),
+  }));
+
   // Auth
   const expected = process.env.VOICE_REMINDER_TOKEN;
   const provided =
