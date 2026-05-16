@@ -270,10 +270,11 @@ async function calendarCreateEvent({ title, start_iso, end_iso, description = ''
       setup_needed: 'Deploy Apps Script web app + set GCAL_WEBHOOK_URL and GCAL_WEBHOOK_SECRET in Netlify env',
     };
   }
+  // Apps Script doPost cannot read custom headers, so secret goes in the body.
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Webhook-Secret': secret || '' },
-    body: JSON.stringify({ title, start_iso, end_iso, description, calendar_id }),
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title, start_iso, end_iso, description, calendar_id, secret: secret || '' }),
   });
   const text = await res.text();
   let data;
