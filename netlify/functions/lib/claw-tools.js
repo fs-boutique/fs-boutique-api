@@ -257,32 +257,6 @@ async function whatsappSendToCleaner({ cleaner_name, message }) {
   return { ok: true, sent_to: name, phone, message_id: data.messages?.[0]?.id };
 }
 
-// ── Tool: calendar_create_event ─────────────────────────────────────────────
-// Posts to Apps Script webhook (Fabio's existing morning-brief Apps Script
-// can host the Calendar.createEvent call). Requires GCAL_WEBHOOK_URL env var.
-async function calendarCreateEvent({ title, start_iso, end_iso, description = '', calendar_id = 'primary' }) {
-  if (!title || !start_iso || !end_iso) return { error: 'title + start_iso + end_iso required' };
-  const url = process.env.GCAL_WEBHOOK_URL;
-  const secret = process.env.GCAL_WEBHOOK_SECRET;
-  if (!url) {
-    return {
-      error: 'Calendar webhook not configured',
-      setup_needed: 'Deploy Apps Script web app + set GCAL_WEBHOOK_URL and GCAL_WEBHOOK_SECRET in Netlify env',
-    };
-  }
-  // Apps Script doPost cannot read custom headers, so secret goes in the body.
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ title, start_iso, end_iso, description, calendar_id, secret: secret || '' }),
-  });
-  const text = await res.text();
-  let data;
-  try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 300) }; }
-  if (!res.ok) return { error: `Calendar create fail ${res.status}`, detail: data };
-  return { ok: true, event_id: data.event_id, html_link: data.html_link, title };
-}
-
 // ── Tool definitions for Anthropic API ───────────────────────────────────────
 const TOOL_DEFINITIONS = [
   {
@@ -398,24 +372,6 @@ const TOOL_DEFINITIONS = [
       required: ['cleaner_name', 'message'],
     },
   },
-  {
-    name: 'calendar_create_event',
-    description:
-      'Create a Google Calendar event. Use when Fabio asks to schedule something with a specific date+time. ' +
-      'Both start_iso and end_iso are required (ISO 8601, e.g. "2026-05-20T14:00:00-07:00"). ' +
-      'If Fabio only gives one time, default duration is 1h. Requires Apps Script webhook configured.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        title: { type: 'string', description: 'Event title.' },
-        start_iso: { type: 'string', description: 'ISO 8601 start datetime with timezone offset.' },
-        end_iso: { type: 'string', description: 'ISO 8601 end datetime with timezone offset.' },
-        description: { type: 'string', description: 'Optional event description / notes.' },
-        calendar_id: { type: 'string', description: 'Calendar ID, default "primary".' },
-      },
-      required: ['title', 'start_iso', 'end_iso'],
-    },
-  },
 ];
 
 const TOOL_HANDLERS = {
@@ -426,7 +382,6 @@ const TOOL_HANDLERS = {
   asana_complete_task: asanaCompleteTask,
   asana_search_tasks: asanaSearchTasks,
   whatsapp_send_to_cleaner: whatsappSendToCleaner,
-  calendar_create_event: calendarCreateEvent,
 };
 
 async function runTool(name, input) {

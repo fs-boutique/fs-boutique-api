@@ -288,8 +288,7 @@ async function converseWithClaude(text, phone) {
     '- asana_create_task(name, notes?, project?, due_at_iso?): create a new task. Use for detailed/multi-part todos or tasks without explicit time. Reminders WITH explicit time should still go through the classifier path (Fabio just says "lembra de X amanhã") — only use this tool when Sonnet itself needs to add a task as part of a tool sequence.\n' +
     '- asana_complete_task(task_gid): mark a task done. Use for "já fiz X", "apaga o lembrete de X", "completa a task X". ALWAYS call asana_search_tasks or asana_today FIRST to get the real gid — never invent one. If multiple matches, ask Fabio which one.\n' +
     '- asana_search_tasks(query, include_completed?): find tasks by partial name match. Returns up to 10 with gid.\n' +
-    '- whatsapp_send_to_cleaner(cleaner_name, message): send a free-form WhatsApp to Ronilde/Rinalva/Lucia. Subject to Meta 24h window — if it fails with 24h-window error, tell Fabio.\n' +
-    '- calendar_create_event(title, start_iso, end_iso, description?, calendar_id?): create a Google Calendar event. Both start_iso + end_iso required (ISO 8601 with offset, e.g. "2026-05-20T14:00:00-07:00"). If Fabio gives one time, default to 1h duration.\n\n' +
+    '- whatsapp_send_to_cleaner(cleaner_name, message): send a free-form WhatsApp to Ronilde/Rinalva/Lucia. Subject to Meta 24h window, if it fails with 24h-window error, tell Fabio.\n\n' +
     'CRITICAL RULES:\n' +
     '- No emojis unless Fabio uses them first.\n' +
     '- Never say "padrão boutique", "[word] boutique", "FS Boutique standard" — strict brand rule.\n' +
