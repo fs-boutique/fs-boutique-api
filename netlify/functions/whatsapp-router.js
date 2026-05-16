@@ -466,22 +466,29 @@ exports.handler = async (event) => {
         continue; // do NOT forward to VPS
       }
 
-      // Conversation path — forward to VPS Claw brain
-      const payload = {
-        from,
-        type: msg.type || 'text',
-        text,
-        audio_id: msg.audio?.id || null,
-        image_id: msg.image?.id || null,
-        timestamp: Math.floor(Date.now() / 1000),
-      };
-      const forwarded = await forwardToVPS(payload);
-      if (!forwarded) {
-        console.log('VPS unreachable, falling back to local Sonnet');
-        const reply = await converseWithClaude(text, from);
-        await sendWhatsApp(from, `[fallback Netlify, VPS offline] ${reply}`);
+      // Conversation path — Netlify v3 Claw (Sonnet + Guesty/Asana tools) as PRIMARY.
+      // VPS Claw kept as fallback if Anthropic API fails entirely.
+      // Reason: v3 has live tool access (occupancy, arrivals, tasks). VPS only reads
+      // cached memory, leading to stale answers like "sync parou 22/04" when queried
+      // about current state.
+      const reply = await converseWithClaude(text, from);
+      if (reply && !reply.startsWith('⚠️ Anthropic API instável')) {
+        await sendWhatsApp(from, reply);
+      } else {
+        // Last-resort fallback: forward to VPS Claw
+        const payload = {
+          from,
+          type: msg.type || 'text',
+          text,
+          audio_id: msg.audio?.id || null,
+          image_id: msg.image?.id || null,
+          timestamp: Math.floor(Date.now() / 1000),
+        };
+        const forwarded = await forwardToVPS(payload);
+        if (!forwarded) {
+          await sendWhatsApp(from, reply || '⚠️ Sistema indisponível agora. Tenta de novo em 30s.');
+        }
       }
-      // If forwarded OK, Claw VPS handles reply via Meta API
     } else if (cleaners[from]) {
       const name = cleaners[from];
       console.log(`Cleaner reply from ${name} (${from}): ${text.slice(0, 100)}`);
