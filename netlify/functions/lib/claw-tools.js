@@ -139,19 +139,147 @@ async function asanaToday() {
   if (!token) return { error: 'Asana token missing' };
   const allTasks = [];
   for (const [projectName, gid] of Object.entries(ASANA_PROJECTS)) {
-    const url = `https://app.asana.com/api/1.0/projects/${gid}/tasks?completed_since=now&opt_fields=name,due_at,due_on&limit=50`;
+    const url = `https://app.asana.com/api/1.0/projects/${gid}/tasks?completed_since=now&opt_fields=name,due_at,due_on,gid&limit=50`;
     const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
     if (!res.ok) continue;
     const data = await res.json();
     for (const t of data.data || []) {
       allTasks.push({
         project: projectName,
+        gid: t.gid,
         name: (t.name || '').trim(),
         due_at: t.due_at || t.due_on || null,
       });
     }
   }
   return { count: allTasks.length, tasks: allTasks };
+}
+
+// ── Tool: asana_create_task ─────────────────────────────────────────────────
+async function asanaCreateTask({ name, notes = '', project = 'Operações', due_at_iso = null }) {
+  const token = process.env.ASANA_TOKEN;
+  if (!token) return { error: 'Asana token missing' };
+  const projectGid = ASANA_PROJECTS[project] || ASANA_PROJECTS['Operações'];
+  const taskData = {
+    name: name.slice(0, 250),
+    notes: [notes, 'Source: Claw write tool'].filter(Boolean).join('\n'),
+    projects: [projectGid],
+    workspace: '1214678919136252',
+  };
+  if (due_at_iso) taskData.due_at = due_at_iso;
+  const res = await fetch('https://app.asana.com/api/1.0/tasks', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ data: taskData }),
+  });
+  const data = await res.json();
+  if (!res.ok) return { error: `Asana create fail ${res.status}`, detail: data };
+  return { ok: true, task_gid: data.data.gid, name: data.data.name, permalink: data.data.permalink_url };
+}
+
+// ── Tool: asana_complete_task ───────────────────────────────────────────────
+async function asanaCompleteTask({ task_gid }) {
+  const token = process.env.ASANA_TOKEN;
+  if (!token) return { error: 'Asana token missing' };
+  if (!task_gid) return { error: 'task_gid required' };
+  const res = await fetch(`https://app.asana.com/api/1.0/tasks/${task_gid}`, {
+    method: 'PUT',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ data: { completed: true } }),
+  });
+  if (!res.ok) {
+    const detail = await res.text();
+    return { error: `Asana complete fail ${res.status}`, detail: detail.slice(0, 400) };
+  }
+  return { ok: true, task_gid };
+}
+
+// ── Tool: asana_search_tasks ────────────────────────────────────────────────
+async function asanaSearchTasks({ query, include_completed = false }) {
+  const token = process.env.ASANA_TOKEN;
+  if (!token) return { error: 'Asana token missing' };
+  if (!query) return { error: 'query required' };
+  const projectGid = ASANA_PROJECTS['Operações'];
+  const since = include_completed ? '1970-01-01T00:00:00Z' : 'now';
+  const url = `https://app.asana.com/api/1.0/projects/${projectGid}/tasks?completed_since=${encodeURIComponent(since)}&opt_fields=name,due_at,completed,gid&limit=100`;
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) return { error: `Asana search fail ${res.status}` };
+  const data = await res.json();
+  const q = query.toLowerCase();
+  const matches = (data.data || [])
+    .filter(t => (t.name || '').toLowerCase().includes(q))
+    .slice(0, 10)
+    .map(t => ({ gid: t.gid, name: t.name, due_at: t.due_at, completed: t.completed }));
+  return { count: matches.length, tasks: matches };
+}
+
+// ── Tool: whatsapp_send_to_cleaner ──────────────────────────────────────────
+// Sends a free-form WhatsApp message to one of the cleaners. Subject to Meta's
+// 24h customer-service window — if the cleaner hasn't messaged us in 24h, only
+// approved templates work and this will fail with code 131047.
+async function whatsappSendToCleaner({ cleaner_name, message }) {
+  if (!cleaner_name || !message) return { error: 'cleaner_name + message required' };
+  const raw = process.env.CLEANER_WHATSAPPS || '';
+  const cleaners = {};
+  for (const pair of raw.split(',')) {
+    const [num, name] = pair.split(':').map(s => s && s.trim());
+    if (num && name) cleaners[num] = name;
+  }
+  const known = Object.values(cleaners);
+  const entry = Object.entries(cleaners).find(
+    ([, n]) => n.toLowerCase() === cleaner_name.toLowerCase()
+  );
+  if (!entry) {
+    return { error: `Unknown cleaner: ${cleaner_name}. Known: ${known.join(', ')}` };
+  }
+  const [phone, name] = entry;
+  const token = process.env.META_ACCESS_TOKEN;
+  const phoneId = process.env.META_PHONE_NUMBER_ID;
+  if (!token || !phoneId) return { error: 'Meta credentials missing' };
+  const res = await fetch(`https://graph.facebook.com/v21.0/${phoneId}/messages`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      to: phone,
+      type: 'text',
+      text: { body: message.slice(0, 4090) },
+    }),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    const errCode = data.error?.code;
+    if (errCode === 131047 || errCode === 131026) {
+      return { error: `24h window expired — cleaner ${name} has not messaged us recently. Need approved template.`, meta_code: errCode };
+    }
+    return { error: `WhatsApp send fail ${res.status}`, detail: data.error?.message };
+  }
+  return { ok: true, sent_to: name, phone, message_id: data.messages?.[0]?.id };
+}
+
+// ── Tool: calendar_create_event ─────────────────────────────────────────────
+// Posts to Apps Script webhook (Fabio's existing morning-brief Apps Script
+// can host the Calendar.createEvent call). Requires GCAL_WEBHOOK_URL env var.
+async function calendarCreateEvent({ title, start_iso, end_iso, description = '', calendar_id = 'primary' }) {
+  if (!title || !start_iso || !end_iso) return { error: 'title + start_iso + end_iso required' };
+  const url = process.env.GCAL_WEBHOOK_URL;
+  const secret = process.env.GCAL_WEBHOOK_SECRET;
+  if (!url) {
+    return {
+      error: 'Calendar webhook not configured',
+      setup_needed: 'Deploy Apps Script web app + set GCAL_WEBHOOK_URL and GCAL_WEBHOOK_SECRET in Netlify env',
+    };
+  }
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Webhook-Secret': secret || '' },
+    body: JSON.stringify({ title, start_iso, end_iso, description, calendar_id }),
+  });
+  const text = await res.text();
+  let data;
+  try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 300) }; }
+  if (!res.ok) return { error: `Calendar create fail ${res.status}`, detail: data };
+  return { ok: true, event_id: data.event_id, html_link: data.html_link, title };
 }
 
 // ── Tool definitions for Anthropic API ───────────────────────────────────────
@@ -196,8 +324,96 @@ const TOOL_DEFINITIONS = [
     name: 'asana_today',
     description:
       'List all open Asana tasks across FS Boutique projects (Operações + 5 property projects). ' +
-      'Use when Fabio asks "what tasks are open", "o que tenho pra hoje", "lembrar de", "TODOs".',
+      'Use when Fabio asks "what tasks are open", "o que tenho pra hoje", "lembrar de", "TODOs". ' +
+      'Each task includes its `gid` — use that gid with asana_complete_task to mark done.',
     input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'asana_create_task',
+    description:
+      'Create a new Asana task. Use when Fabio asks you to add a task/todo/reminder that does not fit the reminder-classifier path ' +
+      '(e.g. detailed multi-part todos, tasks for a specific property project, tasks without a time). ' +
+      'Default project is Operações; specify property name to file under that property project.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Task title (max 250 chars).' },
+        notes: { type: 'string', description: 'Optional task description / details.' },
+        project: {
+          type: 'string',
+          description: 'Project name. Default Operações.',
+          enum: ['Operações', 'Ibirapuera', 'Op Art', 'Moema II', 'Riviera', 'La Quinta'],
+        },
+        due_at_iso: { type: 'string', description: 'Optional ISO 8601 datetime with PST offset for the due time.' },
+      },
+      required: ['name'],
+    },
+  },
+  {
+    name: 'asana_complete_task',
+    description:
+      'Mark an Asana task complete. Use when Fabio says "já fiz X", "pode apagar o lembrete de X", "completa a task X". ' +
+      'You MUST first call asana_search_tasks or asana_today to find the task gid — never invent one. ' +
+      'If multiple matches, ask Fabio which one before completing.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        task_gid: { type: 'string', description: 'Asana task gid (numeric string).' },
+      },
+      required: ['task_gid'],
+    },
+  },
+  {
+    name: 'asana_search_tasks',
+    description:
+      'Search Asana Operações tasks by partial name match. Use to find a task gid before completing or referencing. ' +
+      'Returns up to 10 matches with gid, name, due_at, completed.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Substring to match in task names (case-insensitive).' },
+        include_completed: { type: 'boolean', description: 'Include completed tasks too. Default false.' },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'whatsapp_send_to_cleaner',
+    description:
+      'Send a free-form WhatsApp message to a specific cleaner (Ronilde, Rinalva, or Lucia). ' +
+      'Use when Fabio asks "manda mensagem pra X dizendo Y" or wants to coordinate a one-off. ' +
+      'WARNING: subject to Meta\'s 24h customer-service window — if the cleaner has not messaged the system line recently, ' +
+      'this fails with a clear error and you should tell Fabio to wait for an approved template.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        cleaner_name: {
+          type: 'string',
+          description: 'Cleaner first name.',
+          enum: ['Ronilde', 'Rinalva', 'Lucia'],
+        },
+        message: { type: 'string', description: 'Message body in pt-BR (max 4090 chars).' },
+      },
+      required: ['cleaner_name', 'message'],
+    },
+  },
+  {
+    name: 'calendar_create_event',
+    description:
+      'Create a Google Calendar event. Use when Fabio asks to schedule something with a specific date+time. ' +
+      'Both start_iso and end_iso are required (ISO 8601, e.g. "2026-05-20T14:00:00-07:00"). ' +
+      'If Fabio only gives one time, default duration is 1h. Requires Apps Script webhook configured.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'Event title.' },
+        start_iso: { type: 'string', description: 'ISO 8601 start datetime with timezone offset.' },
+        end_iso: { type: 'string', description: 'ISO 8601 end datetime with timezone offset.' },
+        description: { type: 'string', description: 'Optional event description / notes.' },
+        calendar_id: { type: 'string', description: 'Calendar ID, default "primary".' },
+      },
+      required: ['title', 'start_iso', 'end_iso'],
+    },
   },
 ];
 
@@ -205,6 +421,11 @@ const TOOL_HANDLERS = {
   guesty_occupancy: guestyOccupancy,
   guesty_arrivals: guestyArrivals,
   asana_today: asanaToday,
+  asana_create_task: asanaCreateTask,
+  asana_complete_task: asanaCompleteTask,
+  asana_search_tasks: asanaSearchTasks,
+  whatsapp_send_to_cleaner: whatsappSendToCleaner,
+  calendar_create_event: calendarCreateEvent,
 };
 
 async function runTool(name, input) {

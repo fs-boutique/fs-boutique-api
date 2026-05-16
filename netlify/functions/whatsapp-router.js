@@ -281,28 +281,37 @@ async function converseWithClaude(text, phone) {
     'You communicate with him via WhatsApp on his system line +1 949 372 9980. ' +
     'Reply short, direct, no preamble. Match the language Fabio writes in (PT-BR default; switch to EN only if he writes pure English). ' +
     'You have memory of recent messages in this thread (last ~12h).\n\n' +
-    'TOOLS available — USE THEM when Fabio asks about live data:\n' +
-    '- guesty_occupancy(property, window_days): occupancy % + reservation list. Use for "ocupação", "occupancy", "como tá Moema", etc.\n' +
-    '- guesty_arrivals(window_days): who is checking in. Use for "quem chega", "próximos check-ins", "arrivals".\n' +
-    '- asana_today(): all open tasks across 6 FS Boutique projects. Use for "o que tenho pra hoje", "tasks abertas", "TODOs".\n\n' +
+    'TOOLS available — USE THEM when Fabio asks about live data OR asks for an action:\n' +
+    '- guesty_occupancy(property, window_days): occupancy % + reservation list.\n' +
+    '- guesty_arrivals(window_days): who is checking in.\n' +
+    '- asana_today(): all open tasks across 6 FS Boutique projects (each result includes gid).\n' +
+    '- asana_create_task(name, notes?, project?, due_at_iso?): create a new task. Use for detailed/multi-part todos or tasks without explicit time. Reminders WITH explicit time should still go through the classifier path (Fabio just says "lembra de X amanhã") — only use this tool when Sonnet itself needs to add a task as part of a tool sequence.\n' +
+    '- asana_complete_task(task_gid): mark a task done. Use for "já fiz X", "apaga o lembrete de X", "completa a task X". ALWAYS call asana_search_tasks or asana_today FIRST to get the real gid — never invent one. If multiple matches, ask Fabio which one.\n' +
+    '- asana_search_tasks(query, include_completed?): find tasks by partial name match. Returns up to 10 with gid.\n' +
+    '- whatsapp_send_to_cleaner(cleaner_name, message): send a free-form WhatsApp to Ronilde/Rinalva/Lucia. Subject to Meta 24h window — if it fails with 24h-window error, tell Fabio.\n' +
+    '- calendar_create_event(title, start_iso, end_iso, description?, calendar_id?): create a Google Calendar event. Both start_iso + end_iso required (ISO 8601 with offset, e.g. "2026-05-20T14:00:00-07:00"). If Fabio gives one time, default to 1h duration.\n\n' +
     'CRITICAL RULES:\n' +
     '- No emojis unless Fabio uses them first.\n' +
     '- Never say "padrão boutique", "[word] boutique", "FS Boutique standard" — strict brand rule.\n' +
     '- Use ✅ / ⚠️ / ❌ for status if needed (green check, yellow warning triangle, red X).\n' +
     '- Properties: Ibirapuera, Op Art (Moema), Moema II, Riviera, La Quinta. Under construction: 25h, Ritmo Itaim.\n' +
-    '- For action requests that need to write/modify (send msg to cleaner, change SOP, create Asana task with no time): respond "Não tenho writes habilitados ainda — só queries/reminders". Reminders WITH time DO work (separate path).\n' +
+    '- Writes ARE enabled now (Asana, WhatsApp to cleaners, Calendar). Don\'t say "não tenho writes habilitados". If a write tool fails, surface the error briefly.\n' +
+    '- For destructive actions (asana_complete_task, whatsapp_send_to_cleaner): confirm with Fabio in one short line BEFORE calling the tool if there is ANY ambiguity. If he explicitly said "manda" or "completa" with clear target, just do it and report.\n' +
     '- After running tools, summarize the data Fabio needs in 1-3 lines. Don\'t dump raw JSON. Don\'t list 20 items — pick top 5 or aggregate.\n' +
     'Keep replies under 4 lines unless Fabio asks for more detail.';
 
   const reply = await callClaudeWithTools(key, systemPrompt, messages);
 
-  // Persist this turn only if we got a real reply (skip on overload error msg)
-  if (!reply.startsWith('⚠️ Anthropic API instável')) {
-    const ts = Date.now();
-    history.push({ role: 'user', content: text, ts });
+  // Always persist the user's message — even on transient API errors. Otherwise
+  // back-to-back messages lose context (the "Contexto perdido" bug from 2026-05-16
+  // when an upstream Claude call returned an empty/overloaded response between turns).
+  const ts = Date.now();
+  history.push({ role: 'user', content: text, ts });
+  const replyValid = reply && !reply.startsWith('⚠️ Anthropic API instável') && !reply.startsWith('⚠️ Tool loop hit limit');
+  if (replyValid) {
     history.push({ role: 'assistant', content: reply, ts });
-    await saveHistory(phone, history);
   }
+  await saveHistory(phone, history);
 
   return reply;
 }
