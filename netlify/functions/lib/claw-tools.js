@@ -390,6 +390,69 @@ async function whatsappSendToCleaner({ cleaner_name, message }) {
   return { ok: true, sent_to: name, phone, message_id: data.messages?.[0]?.id };
 }
 
+// ── Tool: tavily_search ─────────────────────────────────────────────────────
+// Tuned-for-AI web search. Better than Anthropic native web_search for
+// structured queries (returns title + URL + content snippet + AI answer).
+async function tavilySearch({ query, max_results = 5, search_depth = 'basic', include_answer = true }) {
+  const key = process.env.TAVILY_API_KEY;
+  if (!key) return { error: 'TAVILY_API_KEY missing' };
+  if (!query) return { error: 'query required' };
+  const res = await fetch('https://api.tavily.com/search', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+    body: JSON.stringify({
+      query,
+      search_depth: search_depth === 'advanced' ? 'advanced' : 'basic',
+      include_answer: !!include_answer,
+      max_results: Math.min(Math.max(parseInt(max_results) || 5, 1), 10),
+    }),
+  });
+  if (!res.ok) {
+    const errText = await res.text();
+    return { error: `Tavily ${res.status}`, detail: errText.slice(0, 300) };
+  }
+  const data = await res.json();
+  return {
+    query: data.query,
+    answer: data.answer,
+    results: (data.results || []).map(r => ({
+      title: r.title,
+      url: r.url,
+      snippet: (r.content || '').slice(0, 400),
+      score: r.score,
+    })),
+  };
+}
+
+// ── Tool: tavily_extract ────────────────────────────────────────────────────
+// Pull structured content from a specific URL (handles JS-rendered pages better
+// than raw fetch, returns clean markdown).
+async function tavilyExtract({ url, extract_depth = 'basic' }) {
+  const key = process.env.TAVILY_API_KEY;
+  if (!key) return { error: 'TAVILY_API_KEY missing' };
+  if (!url) return { error: 'url required' };
+  const res = await fetch('https://api.tavily.com/extract', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+    body: JSON.stringify({
+      urls: [url],
+      extract_depth: extract_depth === 'advanced' ? 'advanced' : 'basic',
+    }),
+  });
+  if (!res.ok) {
+    const errText = await res.text();
+    return { error: `Tavily extract ${res.status}`, detail: errText.slice(0, 300) };
+  }
+  const data = await res.json();
+  const first = (data.results || [])[0];
+  if (!first) return { error: 'no content extracted' };
+  return {
+    url: first.url,
+    raw_content: (first.raw_content || '').slice(0, 8000),
+    truncated: (first.raw_content || '').length > 8000,
+  };
+}
+
 // ── Tool: pricelabs_listings ────────────────────────────────────────────────
 async function pricelabsListings({ include_prices = false } = {}) {
   const key = process.env.PRICELABS_API_KEY;
@@ -579,6 +642,36 @@ const TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'tavily_search',
+    description:
+      'Tuned-for-AI web search via Tavily. Better than generic web_search for structured queries — returns title/url/snippet plus a synthesized answer. ' +
+      'Use for current facts, prices, business info, news, research. Prefer this over web_search when you need cleaner results.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Search query.' },
+        max_results: { type: 'number', description: 'Max results to return (1-10). Default 5.' },
+        search_depth: { type: 'string', enum: ['basic', 'advanced'], description: 'advanced = deeper crawl, slower. Default basic.' },
+        include_answer: { type: 'boolean', description: 'Include AI-synthesized answer. Default true.' },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'tavily_extract',
+    description:
+      'Extract clean structured content from a specific URL via Tavily. Handles JavaScript-rendered pages better than raw web_fetch. ' +
+      'Returns clean markdown-like text. Use when web_fetch fails on a modern site.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'Full HTTPS URL to extract.' },
+        extract_depth: { type: 'string', enum: ['basic', 'advanced'], description: 'advanced = deeper extraction.' },
+      },
+      required: ['url'],
+    },
+  },
+  {
     name: 'pricelabs_listings',
     description:
       'List all FS Boutique properties registered in PriceLabs, with their base/min/max prices, market, group, and push status. ' +
@@ -643,6 +736,8 @@ const TOOL_HANDLERS = {
   recall_memory: recallMemory,
   read_memory_file: readMemoryFile,
   web_fetch: webFetch,
+  tavily_search: tavilySearch,
+  tavily_extract: tavilyExtract,
   pricelabs_listings: pricelabsListings,
   asana_add_comment: asanaAddComment,
   asana_list_projects: asanaListProjects,

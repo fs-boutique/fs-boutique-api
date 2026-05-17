@@ -310,6 +310,8 @@ async function converseWithClaude(text, phone) {
     '- read_memory_file(filename): fetch the full content of a specific memory file. Use after recall_memory returns matches and you need the actual content.\n' +
     '- web_search(query): live web search via Anthropic. Use for current events, prices, addresses, business hours, anything that may have changed since training. Max 3 uses per turn.\n' +
     '- web_fetch(url, max_chars?): fetch a specific URL and return cleaned text. Use to follow up on a web_search result, read a status page, or check an API response.\n' +
+    '- tavily_search(query): tuned-for-AI web search. Better than web_search for structured questions; returns clean title+url+snippet plus AI answer. Prefer over web_search.\n' +
+    '- tavily_extract(url): clean structured extraction from a URL. Handles JS-rendered pages better than web_fetch.\n' +
     '- pricelabs_listings: list FS Boutique properties on PriceLabs with base/min/max prices, market, push status. Use for pricing config questions.\n' +
     '- asana_add_comment(task_gid, text): add a comment to an existing Asana task. ALWAYS asana_search_tasks first to get the gid.\n' +
     '- asana_list_projects: list the 6 FS Boutique Asana projects with gids.\n' +
