@@ -213,6 +213,99 @@ async function asanaSearchTasks({ query, include_completed = false }) {
   return { count: matches.length, tasks: matches };
 }
 
+// ── Memory dir bridge (GitHub-backed) ────────────────────────────────────────
+// Reads Fabio's `claude-memory` git repo via GitHub API. Two tools:
+//   recall_memory(query)      — search MEMORY.md index, return top matches
+//   read_memory_file(filename) — fetch a specific memory file in full
+
+let _memoryIndexCache = { content: null, ts: 0 };
+
+async function loadMemoryIndex() {
+  // Cache the MEMORY.md index for 5 min per function instance.
+  const ttlMs = 5 * 60 * 1000;
+  if (_memoryIndexCache.content && Date.now() - _memoryIndexCache.ts < ttlMs) {
+    return _memoryIndexCache.content;
+  }
+  const repo = process.env.MEMORY_REPO || 'fs-boutique/claude-memory';
+  const token = process.env.GITHUB_TOKEN;
+  if (!token) throw new Error('GITHUB_TOKEN missing');
+  const url = `https://raw.githubusercontent.com/${repo}/main/MEMORY.md`;
+  const res = await fetch(url, { headers: { Authorization: `token ${token}` } });
+  if (!res.ok) throw new Error(`GitHub fetch MEMORY.md fail ${res.status}`);
+  const text = await res.text();
+  _memoryIndexCache = { content: text, ts: Date.now() };
+  return text;
+}
+
+function parseIndexLines(indexText) {
+  // MEMORY.md format: lines like "- [Title](file.md), one-line hook"
+  // Capture file slug + the human-readable description.
+  const rx = /^- \[([^\]]+)\]\(([^)]+\.md)\)[\s,—-]*(.*)$/;
+  const entries = [];
+  for (const line of indexText.split('\n')) {
+    const m = line.match(rx);
+    if (m) entries.push({ title: m[1].trim(), file: m[2].trim(), hook: (m[3] || '').trim() });
+  }
+  return entries;
+}
+
+async function recallMemory({ query, limit = 5 }) {
+  if (!query || !query.trim()) return { error: 'query required' };
+  const q = query.toLowerCase();
+  let indexText;
+  try { indexText = await loadMemoryIndex(); }
+  catch (e) { return { error: e.message }; }
+  const entries = parseIndexLines(indexText);
+  if (entries.length === 0) return { error: 'memory index empty or unparseable' };
+
+  const tokens = q.split(/\s+/).filter(t => t.length >= 2);
+  const scored = entries
+    .map(e => {
+      const hay = `${e.title} ${e.file} ${e.hook}`.toLowerCase();
+      let score = 0;
+      for (const t of tokens) {
+        if (hay.includes(t)) score += 2;
+        if (e.title.toLowerCase().includes(t)) score += 3;
+      }
+      if (hay.includes(q)) score += 5;
+      return { ...e, score };
+    })
+    .filter(x => x.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, Math.min(limit, 10));
+
+  return {
+    query,
+    count: scored.length,
+    matches: scored.map(({ title, file, hook }) => ({ title, file, hook })),
+    next_step: scored.length > 0
+      ? 'Call read_memory_file(filename) to get the full content of any match.'
+      : 'No matches. Try a different keyword or ask Fabio to remind you.',
+  };
+}
+
+async function readMemoryFile({ filename }) {
+  if (!filename) return { error: 'filename required' };
+  // Strip path traversal attempts; only allow plain .md names
+  const safe = filename.replace(/^\/+/, '').replace(/\.\./g, '');
+  if (!safe.endsWith('.md')) return { error: 'only .md files allowed' };
+  const repo = process.env.MEMORY_REPO || 'fs-boutique/claude-memory';
+  const token = process.env.GITHUB_TOKEN;
+  if (!token) return { error: 'GITHUB_TOKEN missing' };
+  const url = `https://raw.githubusercontent.com/${repo}/main/${safe}`;
+  const res = await fetch(url, { headers: { Authorization: `token ${token}` } });
+  if (!res.ok) return { error: `GitHub fetch ${safe} fail ${res.status}` };
+  const text = await res.text();
+  // Cap at 12000 chars to stay within Sonnet's tool result budget
+  const truncated = text.length > 12000;
+  return {
+    filename: safe,
+    content: text.slice(0, 12000),
+    truncated,
+    full_length: text.length,
+  };
+}
+
 // ── Tool: whatsapp_send_to_cleaner ──────────────────────────────────────────
 // Sends a free-form WhatsApp message to one of the cleaners. Subject to Meta's
 // 24h customer-service window — if the cleaner hasn't messaged us in 24h, only
@@ -353,6 +446,35 @@ const TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'recall_memory',
+    description:
+      'Search Fabio\'s persistent memory dir (claude-memory git repo). Returns top matching memory files by keyword. ' +
+      'Use when Fabio references a past decision, a property fact, a preference, a person, a credential, a SOP, or anything that should be remembered across sessions. ' +
+      'Returns a short list of {title, file, hook}. To get the full memory content, call read_memory_file with the returned file name. ' +
+      'Use plain Portuguese or English keywords (e.g. "Ronilde phone", "HostBuddy rules", "Ibirapuera checkout"). Avoid full sentences.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Keywords to search the memory index for.' },
+        limit: { type: 'number', description: 'Max number of matches to return. Default 5.' },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'read_memory_file',
+    description:
+      'Fetch the full content of a specific memory file (must end in .md). Use after recall_memory returns matching files, ' +
+      'when you need the actual content to answer Fabio. Content is capped at 12000 chars.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        filename: { type: 'string', description: 'Filename from recall_memory matches (e.g. "reference_cleaners.md").' },
+      },
+      required: ['filename'],
+    },
+  },
+  {
     name: 'whatsapp_send_to_cleaner',
     description:
       'Send a free-form WhatsApp message to a specific cleaner (Ronilde, Rinalva, or Lucia). ' +
@@ -381,6 +503,8 @@ const TOOL_HANDLERS = {
   asana_create_task: asanaCreateTask,
   asana_complete_task: asanaCompleteTask,
   asana_search_tasks: asanaSearchTasks,
+  recall_memory: recallMemory,
+  read_memory_file: readMemoryFile,
   whatsapp_send_to_cleaner: whatsappSendToCleaner,
 };
 

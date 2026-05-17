@@ -288,6 +288,8 @@ async function converseWithClaude(text, phone) {
     '- asana_create_task(name, notes?, project?, due_at_iso?): create a new task. Use for detailed/multi-part todos or tasks without explicit time. Reminders WITH explicit time should still go through the classifier path (Fabio just says "lembra de X amanhã") — only use this tool when Sonnet itself needs to add a task as part of a tool sequence.\n' +
     '- asana_complete_task(task_gid): mark a task done. Use for "já fiz X", "apaga o lembrete de X", "completa a task X". ALWAYS call asana_search_tasks or asana_today FIRST to get the real gid — never invent one. If multiple matches, ask Fabio which one.\n' +
     '- asana_search_tasks(query, include_completed?): find tasks by partial name match. Returns up to 10 with gid.\n' +
+    '- recall_memory(query, limit?): search Fabio\'s persistent memory dir (claude-memory git repo) by keyword. Returns matching file names + descriptions. Use whenever Fabio references a past decision, property fact, person, preference, SOP, credential location, or anything that should be persistent across sessions.\n' +
+    '- read_memory_file(filename): fetch the full content of a specific memory file. Use after recall_memory returns matches and you need the actual content.\n' +
     '- whatsapp_send_to_cleaner(cleaner_name, message): send a free-form WhatsApp to Ronilde/Rinalva/Lucia. Subject to Meta 24h window, if it fails with 24h-window error, tell Fabio.\n\n' +
     'CRITICAL RULES:\n' +
     '- No emojis unless Fabio uses them first.\n' +
