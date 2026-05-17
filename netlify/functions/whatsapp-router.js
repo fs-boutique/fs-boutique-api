@@ -208,13 +208,7 @@ async function callClaudeWithTools(key, systemPrompt, messages, maxToolIteration
               model,
               max_tokens: 1024,
               system: systemPrompt,
-              // Anthropic native server-side web_search (no client-side handler needed).
-              // Mixed with client tools from claw-tools.js. Results stream back in the
-              // same response so my callClaudeWithTools loop doesn't need a special case.
-              tools: [
-                ...TOOL_DEFINITIONS,
-                { type: 'web_search_20250305', name: 'web_search', max_uses: 3 },
-              ],
+              tools: TOOL_DEFINITIONS,
               messages: convo,
             }),
           });
@@ -294,10 +288,8 @@ async function converseWithClaude(text, phone) {
     '- asana_create_task(name, notes?, project?, due_at_iso?): create a new task. Use for detailed/multi-part todos or tasks without explicit time. Reminders WITH explicit time should still go through the classifier path (Fabio just says "lembra de X amanhã") — only use this tool when Sonnet itself needs to add a task as part of a tool sequence.\n' +
     '- asana_complete_task(task_gid): mark a task done. Use for "já fiz X", "apaga o lembrete de X", "completa a task X". ALWAYS call asana_search_tasks or asana_today FIRST to get the real gid — never invent one. If multiple matches, ask Fabio which one.\n' +
     '- asana_search_tasks(query, include_completed?): find tasks by partial name match. Returns up to 10 with gid.\n' +
-    '- recall_memory(query, limit?): search Fabio\'s persistent memory dir (claude-memory git repo) by keyword. Returns matching file names + descriptions. Use whenever Fabio references a past decision, property fact, person, preference, SOP, credential location, or anything that should be persistent across sessions. **ALWAYS call recall_memory BEFORE suggesting Fabio create a new memory file. The file you think is missing usually already exists.**\n' +
+    '- recall_memory(query, limit?): search Fabio\'s persistent memory dir (claude-memory git repo) by keyword. Returns matching file names + descriptions. Use whenever Fabio references a past decision, property fact, person, preference, SOP, credential location, or anything that should be persistent across sessions.\n' +
     '- read_memory_file(filename): fetch the full content of a specific memory file. Use after recall_memory returns matches and you need the actual content.\n' +
-    '- web_search(query): live web search via Anthropic. Use for current events, prices, addresses, business hours, anything that may have changed since training. Max 3 uses per turn.\n' +
-    '- web_fetch(url, max_chars?): fetch a specific URL and return cleaned text. Use to follow up on a web_search result, read a status page, or check an API response.\n' +
     '- whatsapp_send_to_cleaner(cleaner_name, message): send a free-form WhatsApp to Ronilde/Rinalva/Lucia. Subject to Meta 24h window, if it fails with 24h-window error, tell Fabio.\n\n' +
     'CRITICAL RULES:\n' +
     '- No emojis unless Fabio uses them first.\n' +
