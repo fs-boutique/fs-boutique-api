@@ -46,9 +46,9 @@ async function getMemoryStore() {
     catch (e) { console.log('Blobs unavailable:', e.message); return null; }
   }
   const siteID = process.env.SITE_ID;
-  const token = process.env.NETLIFY_FUNCTIONS_TOKEN;
+  const token = process.env.BLOBS_TOKEN; // Netlify Personal Access Token, scope: account-level
   if (!siteID || !token) {
-    console.log('getStore: missing SITE_ID or NETLIFY_FUNCTIONS_TOKEN env');
+    console.log('getStore: missing SITE_ID or BLOBS_TOKEN env');
     return null;
   }
   try {
