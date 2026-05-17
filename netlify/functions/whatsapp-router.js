@@ -178,7 +178,7 @@ async function classify(text) {
 
 // Sonnet conversational reply WITH TOOL USE. Loops until Claude stops calling tools.
 // Returns final text reply. Tools defined in lib/claw-tools.js (Guesty/Asana queries).
-async function callClaudeWithTools(key, systemPrompt, messages, maxToolIterations = 4) {
+async function callClaudeWithTools(key, systemPrompt, messages, maxToolIterations = 10) {
   const models = ['claude-sonnet-4-6', 'claude-sonnet-4-5-20250929', 'claude-haiku-4-5-20251001'];
 
   // Mutable copy of messages for tool-use loop
@@ -265,7 +265,7 @@ async function callClaudeWithTools(key, systemPrompt, messages, maxToolIteration
     return text || `⚠️ resposta vazia do modelo.`;
   }
 
-  return `⚠️ Tool loop hit limit (${maxToolIterations} iterations). Tenta de novo mais curto.`;
+  return `⚠️ Tool loop hit ${maxToolIterations} iterations sem chegar numa resposta final. Bug do servidor, não tua mensagem. Tenta de novo.`;
 }
 
 async function converseWithClaude(text, phone) {
