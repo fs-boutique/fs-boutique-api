@@ -20,11 +20,42 @@ const ASANA_PROJECTS = {
 };
 
 // ── Guesty auth ───────────────────────────────────────────────────────────────
+// Two-tier cache: in-memory for warm Lambda, Netlify Blobs for cold-start survival.
+// Guesty rate-limits /oauth2/token aggressively, so we MUST persist beyond container lifetime.
 let _guestyTokenCache = { token: null, expiresAt: 0 };
+let _guestyBlobStore = null;
+async function _getGuestyBlobStore() {
+  if (_guestyBlobStore !== null) return _guestyBlobStore; // sentinel: null vs false
+  try {
+    const blobs = await import('@netlify/blobs');
+    const siteID = process.env.SITE_ID;
+    const token = process.env.BLOBS_TOKEN;
+    if (!siteID || !token) { _guestyBlobStore = false; return null; }
+    _guestyBlobStore = blobs.getStore({ name: 'claw-conversation', siteID, token });
+    return _guestyBlobStore;
+  } catch (e) {
+    console.log('guesty blob store init fail:', e.message);
+    _guestyBlobStore = false;
+    return null;
+  }
+}
 async function getGuestyToken() {
-  if (_guestyTokenCache.token && Date.now() < _guestyTokenCache.expiresAt) {
+  const now = Date.now();
+  if (_guestyTokenCache.token && now < _guestyTokenCache.expiresAt) {
     return _guestyTokenCache.token;
   }
+  // Try Blobs cache before hitting Guesty oauth (which rate-limits)
+  const store = await _getGuestyBlobStore();
+  if (store) {
+    try {
+      const cached = await store.get('guesty-token', { type: 'json' });
+      if (cached && cached.token && now < cached.expiresAt - 60000) {
+        _guestyTokenCache = cached;
+        return cached.token;
+      }
+    } catch (e) { console.log('guesty blob read fail:', e.message); }
+  }
+  // Cache miss → fetch fresh from Guesty
   const id = process.env.GUESTY_CLIENT_ID;
   const secret = process.env.GUESTY_CLIENT_SECRET;
   if (!id || !secret) throw new Error('Guesty creds missing');
@@ -40,8 +71,15 @@ async function getGuestyToken() {
   });
   if (!res.ok) throw new Error(`Guesty auth fail ${res.status}`);
   const data = await res.json();
-  _guestyTokenCache.token = data.access_token;
-  _guestyTokenCache.expiresAt = Date.now() + (data.expires_in - 60) * 1000;
+  const entry = {
+    token: data.access_token,
+    expiresAt: now + (data.expires_in - 60) * 1000,
+  };
+  _guestyTokenCache = entry;
+  if (store) {
+    try { await store.setJSON('guesty-token', entry); }
+    catch (e) { console.log('guesty blob write fail:', e.message); }
+  }
   return data.access_token;
 }
 
