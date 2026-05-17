@@ -428,6 +428,29 @@ async function whatsappSendToCleaner({ cleaner_name, message }) {
   return { ok: true, sent_to: name, phone, message_id: data.messages?.[0]?.id };
 }
 
+// ── Claude Mailbox (3-way comm between laptop / iMac / Claw) ────────────────
+async function callMailbox(payload) {
+  const secret = process.env.MAILBOX_SECRET;
+  if (!secret) return { error: 'MAILBOX_SECRET missing' };
+  const url = 'https://fs-boutique-api.netlify.app/.netlify/functions/claude-mailbox';
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ secret, ...payload }),
+    });
+    const data = await res.json();
+    return data;
+  } catch (e) { return { error: `mailbox fetch fail: ${e.message}` }; }
+}
+
+async function mailboxSend({ to, text, priority, tags }) {
+  return callMailbox({ action: 'send', from: 'claw', to: to || 'all', text, priority, tags });
+}
+async function mailboxCheck({ since_ts, mark_read = true, include_read = false }) {
+  return callMailbox({ action: 'check', for: 'claw', since_ts, mark_read, include_read });
+}
+
 // ── Google Workspace via Apps Script bridge ─────────────────────────────────
 // Calls a deployed Google Apps Script that runs under Fabio's account.
 // Shared-secret auth in the body. Handles Calendar/Gmail/Drive.
@@ -719,6 +742,37 @@ const TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'mailbox_send',
+    description:
+      'Send a message to the other Claudes (laptop Claude Code, iMac Claude Garage) via the shared mailbox. ' +
+      'Use when you discover something Fabio is doing on the other surfaces that should know, or when Fabio asks you to "tell my other Claude X" or "remind laptop Claude that Y." Priority "high" also pings Fabio\'s Telegram for visibility.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        to: { type: 'string', description: 'Recipient: "laptop", "imac", "all", or comma-separated. Default "all".' },
+        text: { type: 'string', description: 'Message text (max 4000 chars).' },
+        priority: { type: 'string', enum: ['low', 'normal', 'high'], description: 'high also Telegram-pings Fabio.' },
+        tags: { type: 'array', items: { type: 'string' }, description: 'Optional tags.' },
+      },
+      required: ['text'],
+    },
+  },
+  {
+    name: 'mailbox_check',
+    description:
+      'Check the mailbox for unread messages from the other Claudes (laptop or iMac Claude Code sessions). ' +
+      'Use proactively at the start of a new conversation to catch up on what the other Claudes have been doing. ' +
+      'By default marks the returned messages as read.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        since_ts: { type: 'number', description: 'Only messages newer than this ms epoch. Default 0 (all unread).' },
+        mark_read: { type: 'boolean', description: 'Mark returned messages as read. Default true.' },
+        include_read: { type: 'boolean', description: 'Include already-read messages. Default false.' },
+      },
+    },
+  },
+  {
     name: 'create_calendar_event',
     description:
       'Create an event on Fabio\'s default Google Calendar via the Apps Script bridge. Use when Fabio says "agenda X amanhã às 14h", ' +
@@ -877,6 +931,8 @@ const TOOL_HANDLERS = {
   recall_memory: recallMemory,
   read_memory_file: readMemoryFile,
   web_fetch: webFetch,
+  mailbox_send: mailboxSend,
+  mailbox_check: mailboxCheck,
   create_calendar_event: createCalendarEvent,
   search_gmail: searchGmail,
   create_gmail_draft: createGmailDraft,
