@@ -390,6 +390,55 @@ async function whatsappSendToCleaner({ cleaner_name, message }) {
   return { ok: true, sent_to: name, phone, message_id: data.messages?.[0]?.id };
 }
 
+// ── Tool: pricelabs_listings ────────────────────────────────────────────────
+async function pricelabsListings({ include_prices = false } = {}) {
+  const key = process.env.PRICELABS_API_KEY;
+  if (!key) return { error: 'PRICELABS_API_KEY missing' };
+  const res = await fetch('https://api.pricelabs.co/v1/listings', {
+    headers: { 'X-API-Key': key, Accept: 'application/json' },
+  });
+  if (!res.ok) {
+    return { error: `PriceLabs API ${res.status}` };
+  }
+  const data = await res.json();
+  // Shape: { listings: [{id, name, group, market, push_enabled, ...}] }
+  const listings = (data.listings || []).map(l => ({
+    id: l.id,
+    name: l.name,
+    market: l.market,
+    group: l.group,
+    push_enabled: l.push_enabled,
+    base: l.base,
+    min: l.min,
+    max: l.max,
+    last_refreshed_at: l.last_refreshed_at,
+  }));
+  return { count: listings.length, listings };
+}
+
+// ── Tool: asana_add_comment ─────────────────────────────────────────────────
+async function asanaAddComment({ task_gid, text }) {
+  if (!task_gid || !text) return { error: 'task_gid + text required' };
+  const token = process.env.ASANA_TOKEN;
+  if (!token) return { error: 'ASANA_TOKEN missing' };
+  const res = await fetch(`https://app.asana.com/api/1.0/tasks/${task_gid}/stories`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ data: { text: text.slice(0, 3990) } }),
+  });
+  const data = await res.json();
+  if (!res.ok) return { error: `Asana ${res.status}`, detail: data.errors };
+  return { ok: true, story_gid: data.data?.gid, task_gid };
+}
+
+// ── Tool: asana_list_projects ───────────────────────────────────────────────
+async function asanaListProjects() {
+  return {
+    workspace: '1214678919136252',
+    projects: Object.entries(ASANA_PROJECTS).map(([name, gid]) => ({ name, gid })),
+  };
+}
+
 // ── Tool definitions for Anthropic API ───────────────────────────────────────
 const TOOL_DEFINITIONS = [
   {
@@ -530,6 +579,39 @@ const TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'pricelabs_listings',
+    description:
+      'List all FS Boutique properties registered in PriceLabs, with their base/min/max prices, market, group, and push status. ' +
+      'Use when Fabio asks about pricing setup, base rates, min/max limits, "preço Riviera", or PriceLabs configuration questions.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        include_prices: { type: 'boolean', description: 'Reserved for future use. Default false.' },
+      },
+    },
+  },
+  {
+    name: 'asana_add_comment',
+    description:
+      'Add a comment (story) to an existing Asana task. Use when Fabio asks "comenta na task X que ...", "adiciona nota X na tarefa Y". ' +
+      'You MUST first call asana_search_tasks or asana_today to get the real task_gid.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        task_gid: { type: 'string', description: 'Asana task gid (numeric string).' },
+        text: { type: 'string', description: 'Comment text (max 4000 chars).' },
+      },
+      required: ['task_gid', 'text'],
+    },
+  },
+  {
+    name: 'asana_list_projects',
+    description:
+      'List the 6 FS Boutique Asana projects (Operações + 5 properties) with their gids. Use when Fabio asks which projects exist ' +
+      'or you need to pick a project gid for a task.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
     name: 'whatsapp_send_to_cleaner',
     description:
       'Send a free-form WhatsApp message to a specific cleaner (Ronilde, Rinalva, or Lucia). ' +
@@ -561,6 +643,9 @@ const TOOL_HANDLERS = {
   recall_memory: recallMemory,
   read_memory_file: readMemoryFile,
   web_fetch: webFetch,
+  pricelabs_listings: pricelabsListings,
+  asana_add_comment: asanaAddComment,
+  asana_list_projects: asanaListProjects,
   whatsapp_send_to_cleaner: whatsappSendToCleaner,
 };
 
