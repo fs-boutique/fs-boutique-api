@@ -461,16 +461,29 @@ exports.handler = async (event) => {
       console.log('[classify] input:', text.slice(0, 100), 'output:', JSON.stringify(classified));
       if (classified.type === 'reminder') {
         const task = await createAsanaTask(classified, text);
+        let confirmMsg;
         if (task) {
           const taskName = classified.body || text.slice(0, 60);
-          let confirmMsg = `✅ Salvo: "${taskName}"`;
+          confirmMsg = `✅ Salvo: "${taskName}"`;
           if (classified.due_at_str) {
-            confirmMsg += ` — vou te avisar ${classified.due_at_str}`;
+            confirmMsg += `, vou te avisar ${classified.due_at_str}`;
           }
-          await sendWhatsApp(from, confirmMsg);
         } else {
-          await sendWhatsApp(from, `❌ falha ao criar task no Asana`);
+          confirmMsg = `❌ falha ao criar task no Asana`;
         }
+        await sendWhatsApp(from, confirmMsg);
+
+        // Persist the reminder turn into conversation memory so subsequent
+        // conversation messages have context. Without this, "manda detalhe
+        // do evento" right after a "lembra de jantar com Bruna" returns
+        // "não recebi a mensagem anterior". Tag the user content so Sonnet
+        // knows it was the reminder path.
+        const history = await loadHistory(from);
+        const ts = Date.now();
+        history.push({ role: 'user', content: text, ts });
+        history.push({ role: 'assistant', content: confirmMsg, ts });
+        await saveHistory(from, history);
+
         continue; // do NOT forward to VPS
       }
 
