@@ -390,6 +390,45 @@ async function whatsappSendToCleaner({ cleaner_name, message }) {
   return { ok: true, sent_to: name, phone, message_id: data.messages?.[0]?.id };
 }
 
+// ── Google Workspace via Apps Script bridge ─────────────────────────────────
+// Calls a deployed Google Apps Script that runs under Fabio's account.
+// Shared-secret auth in the body. Handles Calendar/Gmail/Drive.
+async function callGasBridge(action, payload = {}) {
+  const url = process.env.CLAW_GAS_URL;
+  const secret = process.env.CLAW_GAS_SECRET;
+  if (!url || !secret) return { error: 'CLAW_GAS_URL or CLAW_GAS_SECRET missing' };
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action, secret, ...payload }),
+      redirect: 'follow',
+    });
+    const text = await res.text();
+    // Apps Script always returns 200 with JSON body when handler runs
+    try {
+      return JSON.parse(text);
+    } catch {
+      return { error: `GAS non-JSON response (${res.status})`, body: text.slice(0, 400) };
+    }
+  } catch (e) {
+    return { error: `GAS fetch fail: ${e.message}` };
+  }
+}
+
+async function createCalendarEvent(args) {
+  return callGasBridge('create_calendar_event', args);
+}
+async function searchGmail(args) {
+  return callGasBridge('search_gmail', args);
+}
+async function createGmailDraft(args) {
+  return callGasBridge('create_gmail_draft', args);
+}
+async function searchDrive(args) {
+  return callGasBridge('search_drive', args);
+}
+
 // ── Tool: tavily_search ─────────────────────────────────────────────────────
 // Tuned-for-AI web search. Better than Anthropic native web_search for
 // structured queries (returns title + URL + content snippet + AI answer).
@@ -642,6 +681,70 @@ const TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'create_calendar_event',
+    description:
+      'Create an event on Fabio\'s default Google Calendar via the Apps Script bridge. Use when Fabio says "agenda X amanhã às 14h", ' +
+      '"marca reunião com Y na sexta", "põe no calendário". Times must be ISO 8601 with timezone (PST = -07:00 in summer, -08:00 in winter).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'Event title.' },
+        start_iso: { type: 'string', description: 'Start time ISO 8601 with TZ, e.g. 2026-05-20T15:00:00-07:00.' },
+        end_iso: { type: 'string', description: 'End time ISO 8601 with TZ.' },
+        description: { type: 'string', description: 'Optional event description.' },
+        location: { type: 'string', description: 'Optional location.' },
+        attendees: { type: 'array', items: { type: 'string' }, description: 'Optional list of attendee emails.' },
+      },
+      required: ['title', 'start_iso', 'end_iso'],
+    },
+  },
+  {
+    name: 'search_gmail',
+    description:
+      'Search Fabio\'s Gmail using standard Gmail search syntax. Use when Fabio asks about emails ("o que o Booking mandou essa semana?", ' +
+      '"achou alguma resposta do Samantha sobre Riviera?"). Query syntax: `from:X`, `to:X`, `subject:X`, `newer_than:7d`, `is:unread`, etc.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Gmail search query.' },
+        max_results: { type: 'number', description: 'Max threads to return (1-25). Default 10.' },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'create_gmail_draft',
+    description:
+      'Create a Gmail DRAFT (does NOT send). Use when Fabio asks "redige email pra X dizendo Y", "rascunha resposta pro Booking". ' +
+      'Optionally specify reply_to_thread_id to draft a reply on an existing thread.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        to: { type: 'string', description: 'Recipient email.' },
+        subject: { type: 'string', description: 'Subject.' },
+        body: { type: 'string', description: 'Body text.' },
+        cc: { type: 'string', description: 'Optional cc.' },
+        bcc: { type: 'string', description: 'Optional bcc.' },
+        reply_to_thread_id: { type: 'string', description: 'Optional Gmail thread ID for draft reply.' },
+      },
+      required: ['to', 'subject', 'body'],
+    },
+  },
+  {
+    name: 'search_drive',
+    description:
+      'Search Fabio\'s Google Drive by name + full text content. Use when Fabio asks for a doc/file ("acha o contrato Trisul", ' +
+      '"onde está a planilha de cleaners?"). Returns id, name, mime, url, modified date.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Search term.' },
+        max_results: { type: 'number', description: 'Max files to return (1-25). Default 10.' },
+      },
+      required: ['query'],
+    },
+  },
+  {
     name: 'tavily_search',
     description:
       'Tuned-for-AI web search via Tavily. Better than generic web_search for structured queries — returns title/url/snippet plus a synthesized answer. ' +
@@ -736,6 +839,10 @@ const TOOL_HANDLERS = {
   recall_memory: recallMemory,
   read_memory_file: readMemoryFile,
   web_fetch: webFetch,
+  create_calendar_event: createCalendarEvent,
+  search_gmail: searchGmail,
+  create_gmail_draft: createGmailDraft,
+  search_drive: searchDrive,
   tavily_search: tavilySearch,
   tavily_extract: tavilyExtract,
   pricelabs_listings: pricelabsListings,

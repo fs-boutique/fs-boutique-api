@@ -310,6 +310,10 @@ async function converseWithClaude(text, phone) {
     '- read_memory_file(filename): fetch the full content of a specific memory file. Use after recall_memory returns matches and you need the actual content.\n' +
     '- web_search(query): live web search via Anthropic. Use for current events, prices, addresses, business hours, anything that may have changed since training. Max 3 uses per turn.\n' +
     '- web_fetch(url, max_chars?): fetch a specific URL and return cleaned text. Use to follow up on a web_search result, read a status page, or check an API response.\n' +
+    '- create_calendar_event(title, start_iso, end_iso, ...): create a Google Calendar event on Fabio\'s default cal. Times need ISO 8601 with TZ (PST=-07:00 summer, -08:00 winter).\n' +
+    '- search_gmail(query, max_results?): search Fabio\'s Gmail with Gmail syntax (from:X, newer_than:7d, etc).\n' +
+    '- create_gmail_draft(to, subject, body, ...): create Gmail DRAFT (does not send). Optionally reply on a thread.\n' +
+    '- search_drive(query, max_results?): full-text + name search in Fabio\'s Google Drive.\n' +
     '- tavily_search(query): tuned-for-AI web search. Better than web_search for structured questions; returns clean title+url+snippet plus AI answer. Prefer over web_search.\n' +
     '- tavily_extract(url): clean structured extraction from a URL. Handles JS-rendered pages better than web_fetch.\n' +
     '- pricelabs_listings: list FS Boutique properties on PriceLabs with base/min/max prices, market, push status. Use for pricing config questions.\n' +
