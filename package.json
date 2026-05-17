@@ -1,0 +1,9 @@
+{
+  "name": "fs-boutique-api",
+  "version": "1.0.0",
+  "description": "FS Boutique Netlify Functions",
+  "private": true,
+  "dependencies": {
+    "@netlify/blobs": "^8.0.0"
+  }
+}
