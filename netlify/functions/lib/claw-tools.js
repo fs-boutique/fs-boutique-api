@@ -213,6 +213,46 @@ async function asanaSearchTasks({ query, include_completed = false }) {
   return { count: matches.length, tasks: matches };
 }
 
+// ── Tool: web_fetch ──────────────────────────────────────────────────────────
+// Fetches an HTTPS URL and returns the response text (truncated). Useful when
+// web_search returns a URL and Sonnet needs the actual content. No auth.
+async function webFetch({ url, max_chars = 8000 }) {
+  if (!url || !url.startsWith('http')) return { error: 'url required, must be http(s)' };
+  try {
+    const res = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; ClawBot/1.0; +https://fsboutique.co)',
+        'Accept': 'text/html,application/json,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.5',
+      },
+      redirect: 'follow',
+    });
+    const contentType = res.headers.get('content-type') || '';
+    const text = await res.text();
+    // Strip obvious HTML noise for HTML content (script, style tags)
+    let cleaned = text;
+    if (contentType.includes('html')) {
+      cleaned = text
+        .replace(/<script[\s\S]*?<\/script>/gi, '')
+        .replace(/<style[\s\S]*?<\/style>/gi, '')
+        .replace(/<!--[\s\S]*?-->/g, '')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    }
+    const truncated = cleaned.length > max_chars;
+    return {
+      url,
+      status: res.status,
+      content_type: contentType,
+      content: cleaned.slice(0, max_chars),
+      truncated,
+      full_length: cleaned.length,
+    };
+  } catch (e) {
+    return { error: `Fetch fail: ${e.message}` };
+  }
+}
+
 // ── Memory dir bridge (GitHub-backed) ────────────────────────────────────────
 // Reads Fabio's `claude-memory` git repo via GitHub API. Two tools:
 //   recall_memory(query)      — search MEMORY.md index, return top matches
@@ -446,6 +486,21 @@ const TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'web_fetch',
+    description:
+      'Fetch an HTTPS URL and return cleaned text content (up to ~8k chars). Use when you need to read a specific page, ' +
+      'follow up on a web_search result URL, check a status page, or grab a JSON API response. ' +
+      'Strips HTML tags for HTML pages. Not for downloading binary files.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'Full HTTPS URL to fetch.' },
+        max_chars: { type: 'number', description: 'Cap on returned content. Default 8000.' },
+      },
+      required: ['url'],
+    },
+  },
+  {
     name: 'recall_memory',
     description:
       'Search Fabio\'s persistent memory dir (claude-memory git repo). Returns top matching memory files by keyword. ' +
@@ -505,6 +560,7 @@ const TOOL_HANDLERS = {
   asana_search_tasks: asanaSearchTasks,
   recall_memory: recallMemory,
   read_memory_file: readMemoryFile,
+  web_fetch: webFetch,
   whatsapp_send_to_cleaner: whatsappSendToCleaner,
 };
 
