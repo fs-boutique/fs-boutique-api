@@ -38,13 +38,31 @@ async function forwardToVPS(payload) {
 
 // --- Conversation memory (Netlify Blobs) ---
 let blobsModule = null;
+let diagLogged = false;
 async function getMemoryStore() {
   if (!blobsModule) {
     try { blobsModule = await import('@netlify/blobs'); }
     catch (e) { console.log('Blobs unavailable:', e.message); return null; }
   }
-  try { return blobsModule.getStore({ name: 'claw-conversation' }); }
-  catch (e) { console.log('getStore fail:', e.message); return null; }
+  if (!diagLogged) {
+    diagLogged = true;
+    const envKeys = Object.keys(process.env).filter(k => /NETLIFY|BLOB|SITE|DEPLOY|CONTEXT/i.test(k));
+    console.log('[blobs-diag] env keys:', JSON.stringify(envKeys));
+    console.log('[blobs-diag] NETLIFY_BLOBS_CONTEXT present:', !!process.env.NETLIFY_BLOBS_CONTEXT);
+    console.log('[blobs-diag] SITE_ID present:', !!process.env.SITE_ID, '| NETLIFY_SITE_ID present:', !!process.env.NETLIFY_SITE_ID);
+  }
+  // Try implicit first, fall back to explicit if siteID + token are env-provided
+  try {
+    return blobsModule.getStore({ name: 'claw-conversation' });
+  } catch (e) {
+    console.log('getStore implicit fail:', e.message);
+    const siteID = process.env.BLOBS_SITE_ID || process.env.SITE_ID || 'c834120e-def4-492a-8495-3b25689b68e1';
+    const token = process.env.BLOBS_TOKEN || process.env.NETLIFY_AUTH_TOKEN || process.env.NETLIFY_API_TOKEN;
+    if (!token) { console.log('getStore: no token available for explicit mode'); return null; }
+    try {
+      return blobsModule.getStore({ name: 'claw-conversation', siteID, token });
+    } catch (e2) { console.log('getStore explicit fail:', e2.message); return null; }
+  }
 }
 
 async function loadHistory(phone) {
