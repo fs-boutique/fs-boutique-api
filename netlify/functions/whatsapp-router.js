@@ -484,6 +484,11 @@ exports.handler = async (event) => {
       }
     }
 
+    // Image messages: allow through with caption (or placeholder) so VPS handles via Claude vision
+    if (!text && msg.type === 'image' && msg.image?.id) {
+      text = msg.image?.caption || '[image]';
+    }
+
     if (!text) continue;
 
     if (from === FABIO) {
