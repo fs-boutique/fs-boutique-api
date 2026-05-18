@@ -520,27 +520,31 @@ exports.handler = async (event) => {
         continue; // do NOT forward to VPS
       }
 
-      // Conversation path — Netlify v3 Claw (Sonnet + Guesty/Asana tools) as PRIMARY.
-      // VPS Claw kept as fallback if Anthropic API fails entirely.
-      // Reason: v3 has live tool access (occupancy, arrivals, tasks). VPS only reads
-      // cached memory, leading to stale answers like "sync parou 22/04" when queried
-      // about current state.
-      const reply = await converseWithClaude(text, from);
-      if (reply && !reply.startsWith('⚠️ Anthropic API instável')) {
-        await sendWhatsApp(from, reply);
+      // Conversation path — VPS OpenClaw as PRIMARY (full tool set incl. 1Password).
+      // Netlify v3 Claw kept as fallback if VPS forward fails entirely.
+      // Migration flipped 2026-05-17: VPS has filesystem + bash + 1Password + GAS bridge,
+      // and now has integrations.md memory documenting all live API endpoints,
+      // so it can call Guesty/Asana/Calendar/Gmail/etc directly via curl.
+      const payload = {
+        from,
+        type: msg.type || 'text',
+        text,
+        audio_id: msg.audio?.id || null,
+        image_id: msg.image?.id || null,
+        timestamp: Math.floor(Date.now() / 1000),
+      };
+      const forwarded = await forwardToVPS(payload);
+      if (forwarded) {
+        // VPS handles its own Meta API send via whatsapp_responder.py.
+        // No need to send anything from Netlify side.
       } else {
-        // Last-resort fallback: forward to VPS Claw
-        const payload = {
-          from,
-          type: msg.type || 'text',
-          text,
-          audio_id: msg.audio?.id || null,
-          image_id: msg.image?.id || null,
-          timestamp: Math.floor(Date.now() / 1000),
-        };
-        const forwarded = await forwardToVPS(payload);
-        if (!forwarded) {
-          await sendWhatsApp(from, reply || '⚠️ Sistema indisponível agora. Tenta de novo em 30s.');
+        // Fallback: handle locally with Netlify v3 Claw
+        console.log('VPS forward failed, falling back to Netlify Claw');
+        const reply = await converseWithClaude(text, from);
+        if (reply) {
+          await sendWhatsApp(from, reply);
+        } else {
+          await sendWhatsApp(from, '⚠️ Sistema indisponível agora. Tenta de novo em 30s.');
         }
       }
     } else if (cleaners[from]) {
