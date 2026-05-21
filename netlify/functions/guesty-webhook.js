@@ -126,27 +126,70 @@ function isCompleteGuest(guest) {
   return hasUsableEmail || hasPhone;
 }
 
-// Send Telegram alert to Fabio when a guest is synced with missing fields.
-// Fires only on FIRST sync (new Notion page) to avoid spamming on every
-// reservation.updated. Per memory: chat 8505284058, FS Manager bot.
+// Send WhatsApp alert to Fabio via Meta Cloud API when a guest is synced with
+// missing fields. Fires only on FIRST sync (new Notion page) to avoid spamming
+// on every reservation.updated.
+//
+// PRIMARY: Meta Cloud API (Claw WhatsApp) — uses META_ACCESS_TOKEN +
+//   META_PHONE_NUMBER_ID + FABIO_WHATSAPP env vars.
+// FALLBACK: Telegram (legacy FS Manager bot) — kept commented for emergency
+//   only; the bot 8632680202 was killed 2026-05-21 so this path is dead. Do not
+//   re-enable without setting a working TELEGRAM_BOT_TOKEN.
 async function flagMissingFields(guest, missing) {
-  const token = process.env.TELEGRAM_BOT_TOKEN;
-  const chatId = process.env.TELEGRAM_CHAT_ID;
-  if (!token || !chatId || !missing.length) return false;
+  if (!missing.length) return false;
   const checkIn = guest.checkIn ? guest.checkIn.split('T')[0].split('-').reverse().slice(0, 2).join('/') : '?';
   const text = `🚩 Hóspede ${guest.name} (${guest.property || 'sem propriedade'}, check-in ${checkIn}) faltando: ${missing.join(', ')} — preciso pedir pra ele/ela.`;
-  try {
-    const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'HTML' })
-    });
-    console.log('Telegram flag', guest.name, missing.join(','), '→', res.status);
-    return res.ok;
-  } catch (e) {
-    console.log('Telegram flag failed', e.message);
-    return false;
+
+  // Meta Cloud API (primary)
+  const metaToken = process.env.META_ACCESS_TOKEN;
+  const phoneNumberId = process.env.META_PHONE_NUMBER_ID;
+  const fabioWa = process.env.FABIO_WHATSAPP || '19499297173';
+  const apiVersion = process.env.META_API_VERSION || 'v21.0';
+  if (metaToken && phoneNumberId) {
+    try {
+      const res = await fetch(`https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${metaToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          messaging_product: 'whatsapp',
+          to: fabioWa,
+          type: 'text',
+          text: { body: text }
+        })
+      });
+      console.log('Meta WhatsApp flag', guest.name, missing.join(','), '→', res.status);
+      if (res.ok) return true;
+      const errBody = await res.text();
+      console.log('Meta WhatsApp flag non-200 body:', errBody.slice(0, 300));
+    } catch (e) {
+      console.log('Meta WhatsApp flag failed', e.message);
+    }
+  } else {
+    console.log('Meta WhatsApp flag skipped — missing META_ACCESS_TOKEN or META_PHONE_NUMBER_ID');
   }
+
+  // Telegram fallback (DEAD — FS Manager bot 8632680202 killed 2026-05-21).
+  // Commented out intentionally. Re-enable only if a new bot token is set.
+  // const tgToken = process.env.TELEGRAM_BOT_TOKEN;
+  // const tgChat = process.env.TELEGRAM_CHAT_ID;
+  // if (tgToken && tgChat) {
+  //   try {
+  //     const res = await fetch(`https://api.telegram.org/bot${tgToken}/sendMessage`, {
+  //       method: 'POST',
+  //       headers: { 'Content-Type': 'application/json' },
+  //       body: JSON.stringify({ chat_id: tgChat, text, parse_mode: 'HTML' })
+  //     });
+  //     console.log('Telegram flag (fallback)', guest.name, '→', res.status);
+  //     return res.ok;
+  //   } catch (e) {
+  //     console.log('Telegram flag fallback failed', e.message);
+  //   }
+  // }
+
+  return false;
 }
 
 // Upsert contact to Brevo — only when guest record is complete
