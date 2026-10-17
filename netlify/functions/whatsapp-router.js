@@ -1,15 +1,12 @@
 // FS Boutique — WhatsApp router (Meta Cloud API)
 // Inbound to +1 949 372 9980 (system line) routes:
-//   - From Fabio (FABIO_WHATSAPP): classify reminder vs conversation
-//       reminder → Asana task + ack
-//       conversation → Claude (Sonnet) reply with multi-turn memory + tool use
+//   - From Fabio (FABIO_WHATSAPP): silently acknowledge; Claw retired
 //   - From a cleaner (CLEANER_WHATSAPPS): log + forward to Fabio's personal WhatsApp
-//   - From unknown: log + Telegram alert
+//   - From unknown: silently acknowledge
 // Also handles Meta's webhook verification handshake (GET request with hub.challenge).
 
 const META_GRAPH = 'https://graph.facebook.com/v21.0';
 const crypto = require('crypto');
-const { TOOL_DEFINITIONS, runTool } = require('./lib/claw-tools');
 
 // Forward incoming WhatsApp message to OpenClaw VPS endpoint with HMAC signature.
 // OpenClaw on VPS handles classification, memory, response. Netlify is thin proxy.
@@ -470,6 +467,9 @@ exports.handler = async (event) => {
 
   for (const msg of messages) {
     const from = msg.from;
+    // Retired Claw: acknowledge Fabio and unknown senders without side effects.
+    // Preserve only the existing configured cleaner forwarding route.
+    if (from === FABIO || !cleaners[from]) continue;
     let text = msg.text?.body || '';
 
     // If audio message, transcribe via Whisper then process as text
@@ -491,76 +491,13 @@ exports.handler = async (event) => {
 
     if (!text) continue;
 
-    if (from === FABIO) {
-      // ALWAYS classify first. If reminder → save Asana + ack, don't forward to VPS.
-      // This ensures reminders end up in FS Daily PDF (which reads Asana ⚙️ Operações).
-      // Conversation → forward to VPS Claw for full brain.
-      const classified = await classify(text);
-      console.log('[classify] input:', text.slice(0, 100), 'output:', JSON.stringify(classified));
-      if (classified.type === 'reminder') {
-        const task = await createAsanaTask(classified, text);
-        let confirmMsg;
-        if (task) {
-          const taskName = classified.body || text.slice(0, 60);
-          confirmMsg = `✅ Salvo: "${taskName}"`;
-          if (classified.due_at_str) {
-            confirmMsg += `, vou te avisar ${classified.due_at_str}`;
-          }
-        } else {
-          confirmMsg = `❌ falha ao criar task no Asana`;
-        }
-        await sendWhatsApp(from, confirmMsg);
-
-        // Persist the reminder turn into conversation memory so subsequent
-        // conversation messages have context. Without this, "manda detalhe
-        // do evento" right after a "lembra de jantar com Bruna" returns
-        // "não recebi a mensagem anterior". Tag the user content so Sonnet
-        // knows it was the reminder path.
-        const history = await loadHistory(from);
-        const ts = Date.now();
-        history.push({ role: 'user', content: text, ts });
-        history.push({ role: 'assistant', content: confirmMsg, ts });
-        await saveHistory(from, history);
-
-        continue; // do NOT forward to VPS
-      }
-
-      // Conversation path — VPS OpenClaw as PRIMARY (full tool set incl. 1Password).
-      // Netlify v3 Claw kept as fallback if VPS forward fails entirely.
-      // Migration flipped 2026-05-17: VPS has filesystem + bash + 1Password + GAS bridge,
-      // and now has integrations.md memory documenting all live API endpoints,
-      // so it can call Guesty/Asana/Calendar/Gmail/etc directly via curl.
-      const payload = {
-        from,
-        type: msg.type || 'text',
-        text,
-        audio_id: msg.audio?.id || null,
-        image_id: msg.image?.id || null,
-        timestamp: Math.floor(Date.now() / 1000),
-      };
-      const forwarded = await forwardToVPS(payload);
-      if (forwarded) {
-        // VPS handles its own Meta API send via whatsapp_responder.py.
-        // No need to send anything from Netlify side.
-      } else {
-        // Fallback: handle locally with Netlify v3 Claw
-        console.log('VPS forward failed, falling back to Netlify Claw');
-        const reply = await converseWithClaude(text, from);
-        if (reply) {
-          await sendWhatsApp(from, reply);
-        } else {
-          await sendWhatsApp(from, '⚠️ Sistema indisponível agora. Tenta de novo em 30s.');
-        }
-      }
-    } else if (cleaners[from]) {
+    if (cleaners[from]) {
       const name = cleaners[from];
       console.log(`Cleaner reply from ${name} (${from}): ${text.slice(0, 100)}`);
       if (FABIO) {
         await sendWhatsApp(FABIO, `[${name}] ${text}`);
       }
-    } else {
-      console.log(`Unknown sender ${from}: ${text.slice(0, 100)}`);
-      await sendTelegram(`⚠️ WhatsApp inesperado de ${from}: ${text.slice(0, 200)}`);
+
     }
   }
 
