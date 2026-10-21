@@ -24,8 +24,14 @@ async function findExistingPage(token, reservationId) {
       }
     })
   });
+  if (!res.ok) {
+    throw new Error(`Notion reservation lookup failed (${res.status})`);
+  }
   const data = await res.json();
-  return data.results?.[0] || null;
+  if (!Array.isArray(data.results)) {
+    throw new Error('Notion reservation lookup returned invalid results');
+  }
+  return data.results[0] || null;
 }
 
 async function upsertToNotion(token, guest, reservationId) {
@@ -360,8 +366,12 @@ exports.handler = async (event) => {
   try {
     if (isCompleteGuest(guest)) {
       const wasExisting = !!(await findExistingPage(notionToken, reservationId));
-      await upsertToNotion(notionToken, guest, reservationId);
-      if (brevoKey) await upsertToBrevo(brevoKey, guest);
+      if (!(await upsertToNotion(notionToken, guest, reservationId))) {
+        throw new Error('Notion sync failed');
+      }
+      if (brevoKey && !(await upsertToBrevo(brevoKey, guest))) {
+        throw new Error('Brevo sync failed');
+      }
 
       // Flag missing fields on first sync only (avoids spam on reservation.updated)
       const { missing } = guestCompleteness(guest);
