@@ -195,7 +195,7 @@ async function flagMissingFields(guest, missing) {
 // Upsert contact to Brevo — only when guest record is complete
 async function upsertToBrevo(apiKey, guest) {
   if (!isCompleteGuest(guest)) {
-    console.log('Brevo: skipping incomplete guest', { email: guest.email, phone: guest.phone, birthday: guest.birthday });
+    console.log('Brevo: skipping incomplete guest');
     return false;
   }
 
@@ -218,16 +218,35 @@ async function upsertToBrevo(apiKey, guest) {
   };
   if (guest.birthday) body.attributes.BIRTHDAY = guest.birthday;
 
-  const res = await fetch('https://api.brevo.com/v3/contacts', {
+  const res = await fetch('https://gateway.fsboutique.co/brevo/contacts', {
     method: 'POST',
-    headers: { 'api-key': apiKey, 'Content-Type': 'application/json', 'Accept': 'application/json' },
+    headers: { 'Authorization': 'Bearer ' + apiKey, 'Content-Type': 'application/json', 'Accept': 'application/json' },
     body: JSON.stringify(body)
   });
-  console.log('Brevo upsert', guest.email, '→', res.status);
+  console.log('Brevo upsert status', res.status);
   return res.ok;
 }
 
 exports.handler = async (event) => {
+  // Authenticated read-only diagnostic: no Guesty/Notion/contact mutations.
+  if (event.httpMethod === 'GET' && event.queryStringParameters?.mode === 'brevo-health') {
+    const expected = process.env.BREVO_PROXY_TOKEN;
+    const provided = event.headers?.authorization || event.headers?.Authorization || '';
+    const crypto = require('node:crypto');
+    const a = Buffer.from(provided); const b = Buffer.from('Bearer ' + (expected || ''));
+    if (!expected || a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+      return { statusCode: 401, body: JSON.stringify({ ok: false }) };
+    }
+    try {
+      const response = await fetch('https://gateway.fsboutique.co/brevo/health', {
+        method: 'GET', headers: { Authorization: 'Bearer ' + expected }
+      });
+      const probe = await response.json();
+      const ok = response.ok && probe.ok === true && probe.brevo_status === 200;
+      return { statusCode: ok ? 200 : 502, body: JSON.stringify({ ok, brevo_status: Number.isInteger(probe.brevo_status) ? probe.brevo_status : null }) };
+    } catch (_) { return { statusCode: 502, body: JSON.stringify({ ok: false }) }; }
+  }
+
   if (event.httpMethod !== 'POST') {
     return { statusCode: 405, body: 'Method Not Allowed' };
   }
@@ -240,7 +259,7 @@ exports.handler = async (event) => {
   });
 
   const notionToken = process.env.NOTION_TOKEN;
-  const brevoKey = process.env.BREVO_API_KEY;
+  const brevoKey = process.env.BREVO_PROXY_TOKEN;
 
   if (!notionToken) {
     return { statusCode: 500, body: 'NOTION_TOKEN not set' };
@@ -351,7 +370,7 @@ exports.handler = async (event) => {
     property: mappedProperty,
   };
 
-  console.log('Webhook fired', payload.event, 'guest:', { name: guest.name, email: guest.email, phone: guest.phone, birthday: guest.birthday });
+  console.log('Webhook fired', payload.event);
 
   if (!guest.name || !guest.checkIn) {
     return { statusCode: 200, body: 'insufficient data' };
@@ -359,9 +378,12 @@ exports.handler = async (event) => {
 
   try {
     if (isCompleteGuest(guest)) {
+      if (!brevoKey) {
+        return { statusCode: 500, body: JSON.stringify({ success: false, synced: false, reason: 'brevo_not_configured' }) };
+      }
       const wasExisting = !!(await findExistingPage(notionToken, reservationId));
       await upsertToNotion(notionToken, guest, reservationId);
-      if (brevoKey) await upsertToBrevo(brevoKey, guest);
+      const brevoSynced = await upsertToBrevo(brevoKey, guest);
 
       // Flag missing fields on first sync only (avoids spam on reservation.updated)
       const { missing } = guestCompleteness(guest);
@@ -369,12 +391,16 @@ exports.handler = async (event) => {
         await flagMissingFields(guest, missing);
       }
 
+      if (!brevoSynced) {
+        return { statusCode: 502, body: JSON.stringify({ success: false, synced: false, reason: 'brevo_upsert_failed' }) };
+      }
+
       return { statusCode: 200, body: JSON.stringify({ success: true, synced: true, email: guest.email, missing }) };
     }
     return { statusCode: 200, body: JSON.stringify({ success: true, synced: false, reason: 'no usable contact channel (neither email nor phone)' }) };
   } catch (err) {
-    console.log('Sync error', err.message);
-    return { statusCode: 500, body: err.message };
+    console.log('Sync error');
+    return { statusCode: 500, body: JSON.stringify({ success: false, synced: false, reason: 'sync_error' }) };
   }
 };
 
